@@ -30,7 +30,7 @@ export const ConversationItem = (props: Props) => {
       style={{
         display: 'flex',
         'align-items': 'center',
-        padding: '8px 16px',
+        padding: '8px 20px',
         gap: '12px',
         height: '72px',
         'box-sizing': 'border-box',
@@ -41,7 +41,7 @@ export const ConversationItem = (props: Props) => {
       }}
     >
       <div style={{ position: 'relative', 'flex-shrink': '0' }}>
-        <Avatar name={props.data.participant.name} size={54} avatarUrl={props.data.participant.avatarUrl} />
+        <Avatar name={props.data.participant.name} size={54} avatarUrl={props.data.participant.avatarUrl} psid={props.data.participant.id} />
         <Show when={props.data.pageId}>
           <div style={{
             position: 'absolute', bottom: '-2px', right: '-2px',

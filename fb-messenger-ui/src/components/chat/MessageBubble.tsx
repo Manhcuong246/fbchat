@@ -1,4 +1,4 @@
-import { createSignal, createEffect, For, Show } from 'solid-js';
+import { createSignal, createEffect, For, Show, onMount } from 'solid-js';
 import { IconImage } from '../shared/Icons';
 import type { MessageData, MessageMedia } from '../../types/message';
 import { MediaRenderer } from './MediaRenderer';
@@ -27,6 +27,10 @@ function LazyAttachments(props: { messageId: string; token: string }) {
     setLoading(false);
   };
 
+  onMount(() => {
+    loadMedia();
+  });
+
   return (
     <Show
       when={loaded()}
@@ -46,8 +50,8 @@ function LazyAttachments(props: { messageId: string; token: string }) {
           }}
         >
           {loading()
-            ? <span style={{ 'font-size': '13px', color: 'rgba(0,0,0,0.45)' }}>Đang tải...</span>
-            : <><span style={{ display: 'flex', 'align-items': 'center', 'justify-content': 'center' }}><IconImage size={32} /></span><span style={{ 'font-size': '12px', color: 'rgba(0,0,0,0.4)' }}>Nhấn để tải ảnh</span></>
+            ? <span style={{ 'font-size': '13px', color: 'rgba(0,0,0,0.45)' }}>Đang tải ảnh...</span>
+            : <><span style={{ display: 'flex', 'align-items': 'center', 'justify-content': 'center' }}><IconImage size={32} /></span><span style={{ 'font-size': '12px', color: 'rgba(0,0,0,0.4)' }}>Nhấn để tải lại</span></>
           }
         </div>
       }
@@ -117,9 +121,9 @@ export const MessageBubble = (props: Props) => {
         </span>
       );
     }
-    // sent / read / default
+    // sent / read — dấu tích thành công dùng màu xanh
     return (
-      <span style={{ color: msg().isRead ? '#4dab90' : 'rgba(0,0,0,0.3)', 'font-size': '13px' }}>
+      <span style={{ color: 'var(--color-msg-timestamp)', 'font-size': '13px' }}>
         ✓✓
       </span>
     );
@@ -134,7 +138,7 @@ export const MessageBubble = (props: Props) => {
       gap: '3px',
       'margin-top': '3px',
     }}>
-      <span style={{ 'font-size': '11px', color: 'rgba(0,0,0,0.4)', 'white-space': 'nowrap' }}>
+      <span style={{ 'font-size': '12px', color: 'var(--color-msg-timestamp)', 'white-space': 'nowrap' }}>
         {formatTime(msg().timestamp)}
       </span>
       {isOut() && <StatusIcon />}
@@ -163,6 +167,7 @@ export const MessageBubble = (props: Props) => {
 
   return (
     <div
+      class="message-bubble-row"
       style={{
         display: 'flex',
         'justify-content': isOut() ? 'flex-end' : 'flex-start',
@@ -174,22 +179,22 @@ export const MessageBubble = (props: Props) => {
     >
       {/* Avatar slot — chỉ cho incoming */}
       {!isOut() && (
-        <div style={{ width: '28px', 'min-width': '28px', 'flex-shrink': 0 }}>
-          {showAvatar() && <Avatar name={msg().senderName} size={28} />}
+        <div style={{ width: '36px', 'min-width': '36px', 'flex-shrink': 0 }}>
+          {showAvatar() && <Avatar name={msg().senderName} size={36} psid={msg().fromId} />}
         </div>
       )}
 
       <div
         style={{
-          'max-width': '65%',
-          padding: isMediaOnly() ? '0' : '7px 12px 5px',
-          background: isOut() ? '#dcf8c6' : '#ffffff',
+          'max-width': '78%',
+          padding: isMediaOnly() ? '0' : '9px 14px 7px',
+          background: isOut() ? 'var(--bubble-bg-outgoing)' : '#ffffff',
           'border-radius': borderRadius(),
           'box-shadow': '0 1px 2px rgba(0,0,0,0.12)',
           overflow: isMediaOnly() ? 'hidden' : 'visible',
           'word-break': 'break-word',
           'white-space': 'pre-wrap',
-          'font-size': '14.5px',
+          'font-size': '16px',
           'line-height': '1.45',
           color: '#000',
         }}

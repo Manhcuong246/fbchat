@@ -1,8 +1,19 @@
-import { Show } from 'solid-js';
+import { createSignal, createEffect, Show } from 'solid-js';
 import { getAvatarGradient, getAvatarInitials } from '../../utils/avatarUtils';
+import { avatarStore } from '../../stores/avatarStore';
 
-export const Avatar = (props: { name: string; size?: number; avatarUrl?: string | null }) => {
+export const Avatar = (props: { name: string; size?: number; avatarUrl?: string | null; psid?: string }) => {
   const size = () => props.size ?? 48;
+  const [imgError, setImgError] = createSignal(false);
+
+  const resolvedUrl = () => (props.psid && avatarStore[props.psid]) || props.avatarUrl || null;
+
+  createEffect(() => {
+    resolvedUrl();
+    setImgError(false);
+  });
+
+  const showImg = () => resolvedUrl() && !imgError();
 
   return (
     <div
@@ -24,11 +35,12 @@ export const Avatar = (props: { name: string; size?: number; avatarUrl?: string 
         overflow: 'hidden',
       }}
     >
-      <Show when={props.avatarUrl} fallback={getAvatarInitials(props.name)}>
+      <Show when={showImg()} fallback={getAvatarInitials(props.name)}>
         <img
-          src={props.avatarUrl!}
+          src={resolvedUrl()!}
           alt={props.name}
           style={{ width: '100%', height: '100%', 'object-fit': 'cover' }}
+          onError={() => setImgError(true)}
         />
       </Show>
     </div>

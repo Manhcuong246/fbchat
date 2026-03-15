@@ -1,12 +1,11 @@
-import { onMount, onCleanup, For, Show, createSignal, createMemo } from 'solid-js';
-import { IconSettings, IconLogout, IconWarning, IconSearch } from '../shared/Icons';
+import { onMount, onCleanup, For, Show, createSignal, createMemo, createEffect } from 'solid-js';
+import { IconSettings, IconLogout, IconWarning, IconSearch, IconRefresh } from '../shared/Icons';
 import { useNavigate } from '@solidjs/router';
 import { ConversationItem } from './ConversationItem';
 import { convState, setConvState } from '../../stores/conversationStore';
-import { msgState } from '../../stores/messageStore';
 import type { ConversationData } from '../../types/conversation';
 import { authState, logout } from '../../stores/authStore';
-import { fetchConversations, fetchMoreConversations } from '../../services/syncService';
+import { fetchConversations, fetchMoreConversations, clearAllCache } from '../../services/syncService';
 import { clearConversationsLightCache } from '../../services/fbConversationService';
 import { ReadTracker } from '../../services/readTracker';
 
@@ -28,32 +27,6 @@ export const Sidebar = () => {
       c.participant.name.toLowerCase().includes(q)
     );
   });
-
-  /** Preview đồng bộ với khung tin nhắn: ưu tiên lấy từ msgState.messages nếu đã load. */
-  /** Cập nhật participant.name từ senderName trong tin nhắn khi API trả "Khách"/Unknown. */
-  const displayConv = (conv: ConversationData): ConversationData => {
-    const msgs = msgState.messages[conv.id];
-    if (msgs?.length) {
-      const last = msgs[msgs.length - 1];
-      const hasMedia = !!last.media || !!(last.medias?.length);
-      const text = last.text ?? (hasMedia ? 'Tệp đính kèm' : '');
-      const isPlaceholderName = !conv.participant.name || conv.participant.name === 'Khách';
-      const fromParticipant = msgs.filter((m) => !m.isFromPage);
-      const senderName = fromParticipant.length > 0
-        ? fromParticipant[fromParticipant.length - 1].senderName
-        : '';
-      const participantName = isPlaceholderName && senderName
-        ? senderName
-        : conv.participant.name;
-      return {
-        ...conv,
-        lastMessage: text,
-        lastMessageTime: last.timestamp,
-        participant: { ...conv.participant, name: participantName },
-      };
-    }
-    return conv;
-  };
 
   const handleSelectConversation = (conv: ConversationData) => {
     setConvState('selectedId', conv.id);
@@ -83,12 +56,16 @@ export const Sidebar = () => {
     const { scrollTop, scrollHeight, clientHeight } = el;
     const threshold = 80;
     if (scrollTop + clientHeight < scrollHeight - threshold) return;
-    authState.selectedPages.forEach((p) => {
-      if (convState.hasMore[p.id] && convState.afterCursors[p.id]) {
-        fetchMoreConversations(p.id);
-      }
-    });
+    if (convState.hasMore['merged'] && convState.afterCursors['merged']) {
+      fetchMoreConversations();
+    }
   };
+
+  createEffect(() => {
+    if (showMenu()) document.body.classList.add('menu-open-sidebar');
+    else document.body.classList.remove('menu-open-sidebar');
+    onCleanup(() => document.body.classList.remove('menu-open-sidebar'));
+  });
 
   onMount(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -106,10 +83,13 @@ export const Sidebar = () => {
     if (pages.length > 0) {
       setConvState('loading', true);
       setConvState('error', null);
-      Promise.all(pages.map((p) => fetchConversations(p.id)))
+      const STABILIZATION_MS = 2200;
+      fetchConversations()
         .then(() => {
-          setConvState('loading', false);
-          setConvState('error', null);
+          setTimeout(() => {
+            setConvState('loading', false);
+            setConvState('error', null);
+          }, STABILIZATION_MS);
         })
         .catch((err: unknown) => {
           setConvState('loading', false);
@@ -126,13 +106,14 @@ export const Sidebar = () => {
   return (
     <div style={{ display: 'flex', 'flex-direction': 'column', height: '100%', overflow: 'hidden' }}>
       <header class="sidebar-topbar">
-        <div id="sidebar-menu-root" style={{ position: 'relative', 'flex-shrink': 0 }}>
+        <div id="sidebar-menu-root" style={{ position: 'relative', 'flex-shrink': 0, 'z-index': 100 }}>
           <button
             type="button"
             aria-label="Menu"
             onClick={(e) => { e.stopPropagation(); setShowMenu((v) => !v); }}
             style={{
-              background: 'none', border: 'none', cursor: 'pointer', padding: '8px',
+              background: 'none', border: 'none', cursor: 'pointer', padding: '12px',
+              'min-width': '44px', 'min-height': '44px',
               'border-radius': '50%', display: 'flex', 'align-items': 'center',
               'justify-content': 'center', color: '#707579', transition: 'background 150ms, color 150ms',
             }}
@@ -150,7 +131,7 @@ export const Sidebar = () => {
             <div style={{
               position: 'absolute', top: '44px', left: '0', background: '#ffffff',
               'border-radius': '12px', 'box-shadow': '0 4px 24px rgba(0,0,0,0.15)',
-              'min-width': '200px', 'z-index': '200', overflow: 'visible',
+              'min-width': '200px', 'z-index': '99999', overflow: 'visible',
               animation: 'slideDown 180ms ease forwards',
             }}>
               <button
@@ -195,6 +176,32 @@ export const Sidebar = () => {
                 </div>
               </Show>
               <div style={{ height: '1px', background: '#f0f0f0', margin: '4px 0' }} />
+              <button
+                type="button"
+                onClick={async () => {
+                  setShowMenu(false);
+                  setConvState('loading', true);
+                  await clearAllCache();
+                  clearConversationsLightCache();
+                  setConvState({ conversations: [], selectedId: null, selectedPageId: null });
+                  try {
+                    await fetchConversations();
+                  } finally {
+                    setTimeout(() => setConvState('loading', false), 2200);
+                  }
+                }}
+                style={{
+                  display: 'flex', 'align-items': 'center', gap: '12px', width: '100%',
+                  padding: '12px 16px', background: 'none', border: 'none', cursor: 'pointer',
+                  'font-size': '14px', color: '#3390ec', 'text-align': 'left',
+                  transition: 'background 150ms', 'box-sizing': 'border-box',
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = '#f1f3f4'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}
+              >
+                <span style={{ width: '24px', display: 'flex', 'align-items': 'center', 'justify-content': 'center' }}><IconSettings size={18} /></span>
+                Xóa cache và tải lại
+              </button>
               <button type="button" onClick={handleLogout} style={{ display: 'flex', 'align-items': 'center', gap: '12px', width: '100%', padding: '12px 16px', background: confirmLogout() ? '#fff3f3' : 'none', border: 'none', cursor: 'pointer', 'font-size': '14px', color: '#e53935', 'font-weight': confirmLogout() ? '600' : '400', 'text-align': 'left', transition: 'background 150ms', 'box-sizing': 'border-box' }} onMouseEnter={(e) => { e.currentTarget.style.background = confirmLogout() ? '#ffe8e8' : '#f1f3f4'; }} onMouseLeave={(e) => { e.currentTarget.style.background = confirmLogout() ? '#fff3f3' : 'none'; }}>
                 <span style={{ width: '24px', display: 'flex', 'align-items': 'center', 'justify-content': 'center' }}>{confirmLogout() ? <IconWarning size={18} /> : <IconLogout size={18} />}</span>
                 {confirmLogout() ? 'Xác nhận đăng xuất?' : 'Đăng xuất'}
@@ -277,7 +284,7 @@ export const Sidebar = () => {
             <For each={filteredConversations()}>
               {(conv, i) => (
                 <ConversationItem
-                  data={displayConv(conv)}
+                  data={conv}
                   index={i()}
                   isSelected={convState.selectedId === conv.id}
                   onClick={() => handleSelectConversation(conv)}

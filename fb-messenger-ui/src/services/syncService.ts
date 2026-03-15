@@ -7,6 +7,7 @@ import { produce } from 'solid-js/store';
 import { setMsgState } from '../stores/messageStore';
 import { convState, setConvState } from '../stores/conversationStore';
 import { authState } from '../stores/authStore';
+import { setAvatarStore } from '../stores/avatarStore';
 import type { MessageData } from '../types/message';
 import type { MessageMedia } from '../types/message';
 import type { ConversationData } from '../types/conversation';
@@ -17,6 +18,31 @@ const bc =
   typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('fb_sync_v2') : null;
 
 const fetching = new Set<string>();
+
+const pendingNameUpdates = new Map<string, string>();
+let pendingNameTimeout: ReturnType<typeof setTimeout> | null = null;
+
+function flushPendingNameUpdates() {
+  if (pendingNameUpdates.size === 0) return;
+  const updates = new Map(pendingNameUpdates);
+  pendingNameUpdates.clear();
+  pendingNameTimeout = null;
+  setConvState(
+    produce((s) => {
+      updates.forEach((name, convId) => {
+        const idx = s.conversations.findIndex((c) => c.id === convId);
+        if (idx >= 0) s.conversations[idx].participant.name = name;
+      });
+    })
+  );
+}
+
+function scheduleNameUpdate(convId: string, name: string) {
+  pendingNameUpdates.set(convId, name);
+  if (!pendingNameTimeout) {
+    pendingNameTimeout = setTimeout(flushPendingNameUpdates, 400);
+  }
+}
 
 // Client-side session cache (mất khi F5)
 const msgCache = new Map<
@@ -60,8 +86,19 @@ export function invalidateCache(convId: string) {
   msgCache.delete(`msgs:${convId}`);
 }
 
+/** Xóa toàn bộ cache client + gọi server flush. Dùng khi cần bắt đầu lại. */
+export async function clearAllCache(): Promise<void> {
+  msgCache.clear();
+  fetching.clear();
+  setAvatarStore({});
+  try {
+    await fetch('http://localhost:3001/cache/flush', { method: 'DELETE' });
+  } catch {}
+}
+
 async function subscribePagesToWebhook() {
   for (const page of authState.selectedPages) {
+    if (!page.id || !page.accessToken) continue;
     try {
       const res = await fetch(`${SERVER}/api/subscribe-page`, {
         method: 'POST',
@@ -69,6 +106,7 @@ async function subscribePagesToWebhook() {
         body: JSON.stringify({ pageId: page.id, pageAccessToken: page.accessToken }),
       });
       if (res.ok) console.log('[SYNC] Page subscribed:', page.name);
+      else if (res.status === 400) console.warn('[SYNC] Subscribe skip:', page.name, await res.text());
     } catch {}
   }
 }
@@ -101,7 +139,7 @@ function connectSocket() {
       const convId = await resolveConvId(data.pageId, data.senderId, data.convId);
       if (!convId) return;
       const tsMs = data.timestamp < 1e12 ? data.timestamp * 1000 : data.timestamp;
-      updatePreview(convId, data.text, tsMs, false);
+      updatePreview(convId, data.text, tsMs, false, data.pageId, data.senderId);
       await fetchMessages(convId, data.pageId);
     }
   );
@@ -120,7 +158,7 @@ function connectSocket() {
       if (convId) {
         invalidateCache(convId);
         const tsMs = data.timestamp < 1e12 ? data.timestamp * 1000 : data.timestamp;
-        updatePreview(convId, data.text, tsMs, true);
+        updatePreview(convId, data.text, tsMs, true, data.pageId, data.recipientId);
         await fetchMessages(convId, data.pageId);
         // Không gọi fetchConversations — tránh refetch toàn bộ list → mất tên, nháy Khách
       }
@@ -139,10 +177,8 @@ function connectSocket() {
     }
   });
 
-  socket.on('conversations_synced', async (data: { pageId: string }) => {
-    if (data?.pageId) {
-      await fetchConversations(data.pageId);
-    }
+  socket.on('conversations_synced', async () => {
+    await fetchConversations();
   });
 }
 
@@ -156,7 +192,7 @@ async function resolveConvId(
     (c) => c.pageId === pageId && c.participant.id === participantId
   );
   if (conv) return conv.id;
-  await fetchConversations(pageId);
+  await fetchConversations();
   const conv2 = convState.conversations.find(
     (c) => c.pageId === pageId && c.participant.id === participantId
   );
@@ -300,14 +336,7 @@ async function fetchMessagesFromServer(
     if (senderName) {
       const conv = convState.conversations.find((c) => c.id === convId);
       if (conv && (!conv.participant.name || conv.participant.name === 'Khách')) {
-        setConvState(
-          produce((s) => {
-            const idx = s.conversations.findIndex((c) => c.id === convId);
-            if (idx >= 0) {
-              s.conversations[idx].participant.name = senderName;
-            }
-          })
-        );
+        scheduleNameUpdate(convId, senderName);
       }
     }
 
@@ -321,13 +350,16 @@ async function fetchMessagesFromServer(
 
 const CONV_PAGE_SIZE = 20;
 
-function mapConvFromApi(c: Record<string, unknown>, pageId: string, page: { name?: string; avatarUrl?: string; color?: string }): ConversationData {
+function mapConvFromApi(c: Record<string, unknown>, pageId: string, page: { name?: string; avatarUrl?: string; color?: string; accessToken?: string }): ConversationData {
   const participants = (c.participants as { data?: Array<{ id: string; name?: string }> })
     ?.data ?? [];
   const participant =
     participants.find((p: { id: string }) => p.id !== pageId) ??
     participants[0] ?? { id: (c.participant_id as string) ?? '', name: (c.participant_name as string) ?? 'Unknown' };
-  const avatarUrl = (participant as { picture?: string }).picture ?? (participant as { avatarUrl?: string }).avatarUrl;
+  const avatarUrlRaw = (participant as { picture?: string | { data?: { url?: string } } }).picture;
+  const avatarUrlFromApi = typeof avatarUrlRaw === 'string' ? avatarUrlRaw : (avatarUrlRaw as { data?: { url?: string } })?.data?.url;
+  const participantId = participant.id ?? (c.participant_id as string) ?? '';
+  const avatarUrl = avatarUrlFromApi ?? undefined;
   const updatedTime = c.updated_time as string | undefined;
   const lastMsgTime = c.last_message_time as number | undefined;
   const lastMessageTime = updatedTime
@@ -352,21 +384,58 @@ function mapConvFromApi(c: Record<string, unknown>, pageId: string, page: { name
   };
 }
 
-/** Fetch conversation list - 20 đầu tiên. */
-export async function fetchConversations(pageId: string): Promise<void> {
-  const key = `convs:${pageId}`;
-  if (fetching.has(key)) return;
-  fetching.add(key);
+const MERGED_KEY = 'merged';
+
+/** Lấy tên thật từ Facebook User API khi participant hiển thị Khách. */
+async function fetchParticipantNameIfKhach(convId: string, pageId: string, participantId: string): Promise<void> {
+  if (!participantId) return;
+  const conv = convState.conversations.find((c) => c.id === convId);
+  if (!conv || (conv.participant.name && conv.participant.name !== 'Khách')) return;
 
   const page = authState.selectedPages.find((p) => p.id === pageId);
-  if (!page) {
-    fetching.delete(key);
-    return;
-  }
+  if (!page?.accessToken) return;
 
   try {
     const res = await fetch(
-      `${SERVER}/api/conversations?token=${encodeURIComponent(page.accessToken)}&pageId=${pageId}&limit=${CONV_PAGE_SIZE}`
+      `${SERVER}/api/user/${encodeURIComponent(participantId)}/name?token=${encodeURIComponent(page.accessToken)}`
+    );
+    if (!res.ok) return;
+    const body = await res.json();
+    const name = body.name as string;
+    if (!name) return;
+    scheduleNameUpdate(convId, name);
+  } catch {}
+}
+
+/** Gọi 1 lần lấy tất cả avatar, tránh N request bị limit. */
+async function fetchAvatarsBatch(psids: string[], token: string): Promise<void> {
+  if (psids.length === 0 || !token) return;
+  try {
+    const res = await fetch(`${SERVER}/api/avatars`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ psids, token }),
+    });
+    if (!res.ok) return;
+    const data = (await res.json()) as Record<string, string>;
+    setAvatarStore(data);
+  } catch {}
+}
+
+/** Fetch 20 hội thoại tổng cộng (chung tất cả pages), không phải 20/page. */
+export async function fetchConversations(): Promise<void> {
+  const pages = authState.selectedPages;
+  if (pages.length === 0) return;
+
+  const key = 'convs_merged';
+  if (fetching.has(key)) return;
+  fetching.add(key);
+
+  try {
+    const pageIds = pages.map((p) => p.id).join(',');
+    const tokens = JSON.stringify(pages.map((p) => p.accessToken));
+    const res = await fetch(
+      `${SERVER}/api/conversations/merged?pageIds=${encodeURIComponent(pageIds)}&tokens=${encodeURIComponent(tokens)}&limit=${CONV_PAGE_SIZE}`
     );
     if (!res.ok) return;
 
@@ -374,17 +443,20 @@ export async function fetchConversations(pageId: string): Promise<void> {
     const raw = body.data ?? body;
     if (!Array.isArray(raw)) return;
 
-    const convs: ConversationData[] = raw.map((c: Record<string, unknown>) =>
-      mapConvFromApi(c, pageId, page)
-    );
+    const pageById = new Map(pages.map((p) => [p.id, p]));
+    const convs: ConversationData[] = raw.map((c: Record<string, unknown>) => {
+      const pageId = (c.page_id as string) ?? (c.participants as { data?: Array<{ id: string }> })?.data?.[0]?.id ?? '';
+      const page = pageById.get(pageId) ?? pages[0];
+      return mapConvFromApi(c, pageId, page);
+    });
 
     const afterCursor = (body.afterCursor as string | null) ?? null;
     const hasMore = (body.hasMore as boolean) ?? false;
 
     setConvState(
       produce((state) => {
-        const existingByPage = state.conversations.filter((c) => c.pageId === pageId);
-        const existingById = new Map(existingByPage.map((c) => [c.id, c]));
+        const existingById = new Map(state.conversations.map((c) => [c.id, c]));
+        const mergedIds = new Set(convs.map((c) => c.id));
         const merged = convs.map((c) => {
           const existing = existingById.get(c.id);
           const keepName = existing?.participant?.name && existing.participant.name !== 'Khách';
@@ -393,23 +465,37 @@ export async function fetchConversations(pageId: string): Promise<void> {
             : c.participant.name;
           return { ...c, participant: { ...c.participant, name } };
         });
-        const others = state.conversations.filter((c) => c.pageId !== pageId);
-        state.conversations = [...others, ...merged].sort(
+        const now = Date.now();
+        const RECENT_MS = 45000;
+        const preserved = state.conversations.filter(
+          (c) =>
+            !mergedIds.has(c.id) &&
+            (c.id === state.selectedId || c.lastMessageTime > now - RECENT_MS)
+        );
+        state.conversations = [...merged, ...preserved].sort(
           (a, b) => b.lastMessageTime - a.lastMessageTime
         );
-        state.afterCursors = { ...state.afterCursors, [pageId]: afterCursor };
-        state.hasMore = { ...state.hasMore, [pageId]: hasMore };
+        state.afterCursors = { ...state.afterCursors, [MERGED_KEY]: afterCursor };
+        state.hasMore = { ...state.hasMore, [MERGED_KEY]: hasMore };
       })
     );
 
-    // Pre-fetch messages cho các hội thoại "Khách" để lấy tên thật (API conversations thường trả Unknown)
     const khachConvs = convs.filter((c) => !c.participant.name || c.participant.name === 'Khách');
-    const PRE_FETCH_LIMIT = 12;
-    khachConvs.slice(0, PRE_FETCH_LIMIT).forEach((c, i) => {
-      setTimeout(() => fetchMessages(c.id, pageId), 300 * (i + 1));
+    khachConvs.forEach((c, i) => {
+      setTimeout(() => fetchMessages(c.id, c.pageId), 200 * (i + 1));
     });
+    khachConvs.forEach((c, i) => {
+      setTimeout(() => fetchParticipantNameIfKhach(c.id, c.pageId, c.participant.id), 350 * (i + 1));
+    });
+    if (khachConvs.length > 0) {
+      setTimeout(() => fetchConversations().catch(() => {}), 8000);
+    }
 
-    console.log(`[SYNC] fetchConversations done: ${pageId} → ${convs.length} convs`);
+    const psids = [...new Set(convs.map((c) => c.participant.id).filter(Boolean))];
+    if (psids.length > 0 && pages[0]?.accessToken) {
+      fetchAvatarsBatch(psids, pages[0].accessToken).catch(() => {});
+    }
+    console.log(`[SYNC] fetchConversations merged: ${convs.length} convs (chung ${pages.length} page), Khách: ${khachConvs.length}`);
   } catch (e) {
     console.error('[SYNC] fetchConversations error:', e);
   } finally {
@@ -417,26 +503,24 @@ export async function fetchConversations(pageId: string): Promise<void> {
   }
 }
 
-/** Load thêm 20 hội thoại khi cuộn xuống hết. */
-export async function fetchMoreConversations(pageId: string): Promise<void> {
-  const after = convState.afterCursors[pageId];
-  if (!after || !convState.hasMore[pageId] || convState.loadingMore) return;
+/** Load thêm 20 hội thoại khi cuộn xuống hết (20 tổng, không phải mỗi page). */
+export async function fetchMoreConversations(): Promise<void> {
+  const after = convState.afterCursors[MERGED_KEY];
+  if (!after || !convState.hasMore[MERGED_KEY] || convState.loadingMore) return;
 
-  const key = `convs_more:${pageId}`;
+  const pages = authState.selectedPages;
+  if (pages.length === 0) return;
+
+  const key = 'convs_merged_more';
   if (fetching.has(key)) return;
   fetching.add(key);
   setConvState('loadingMore', true);
 
-  const page = authState.selectedPages.find((p) => p.id === pageId);
-  if (!page) {
-    fetching.delete(key);
-    setConvState('loadingMore', false);
-    return;
-  }
-
   try {
+    const pageIds = pages.map((p) => p.id).join(',');
+    const tokens = JSON.stringify(pages.map((p) => p.accessToken));
     const res = await fetch(
-      `${SERVER}/api/conversations?token=${encodeURIComponent(page.accessToken)}&pageId=${pageId}&limit=${CONV_PAGE_SIZE}&after=${encodeURIComponent(after)}`
+      `${SERVER}/api/conversations/merged?pageIds=${encodeURIComponent(pageIds)}&tokens=${encodeURIComponent(tokens)}&limit=${CONV_PAGE_SIZE}&after=${encodeURIComponent(after)}`
     );
     if (!res.ok) return;
 
@@ -444,17 +528,19 @@ export async function fetchMoreConversations(pageId: string): Promise<void> {
     const raw = body.data ?? body;
     if (!Array.isArray(raw)) return;
 
-    const convs: ConversationData[] = raw.map((c: Record<string, unknown>) =>
-      mapConvFromApi(c, pageId, page)
-    );
+    const pageById = new Map(pages.map((p) => [p.id, p]));
+    const convs: ConversationData[] = raw.map((c: Record<string, unknown>) => {
+      const pageId = (c.page_id as string) ?? '';
+      const page = pageById.get(pageId) ?? pages[0];
+      return mapConvFromApi(c, pageId, page);
+    });
 
     const nextCursor = (body.afterCursor as string | null) ?? null;
     const hasMore = (body.hasMore as boolean) ?? false;
 
     setConvState(
       produce((state) => {
-        const existingByPage = state.conversations.filter((c) => c.pageId === pageId);
-        const existingById = new Map(existingByPage.map((c) => [c.id, c]));
+        const existingById = new Map(state.conversations.map((c) => [c.id, c]));
         const merged = convs.map((c) => {
           const existing = existingById.get(c.id);
           const keepName = existing?.participant?.name && existing.participant.name !== 'Khách';
@@ -463,16 +549,23 @@ export async function fetchMoreConversations(pageId: string): Promise<void> {
             : c.participant.name;
           return { ...c, participant: { ...c.participant, name } };
         });
-        const others = state.conversations.filter((c) => c.pageId !== pageId);
-        state.conversations = [...others, ...existingByPage, ...merged].sort(
+        state.conversations = [...state.conversations, ...merged].sort(
           (a, b) => b.lastMessageTime - a.lastMessageTime
         );
-        state.afterCursors = { ...state.afterCursors, [pageId]: nextCursor };
-        state.hasMore = { ...state.hasMore, [pageId]: hasMore };
+        state.afterCursors = { ...state.afterCursors, [MERGED_KEY]: nextCursor };
+        state.hasMore = { ...state.hasMore, [MERGED_KEY]: hasMore };
       })
     );
 
-    console.log(`[SYNC] fetchMoreConversations: ${pageId} +${convs.length}`);
+    const morePsids = [...new Set(convs.map((c) => c.participant.id).filter(Boolean))];
+    if (morePsids.length > 0 && pages[0]?.accessToken) {
+      fetchAvatarsBatch(morePsids, pages[0].accessToken).catch(() => {});
+    }
+    const moreKhach = convs.filter((c) => !c.participant.name || c.participant.name === 'Khách');
+    moreKhach.forEach((c, i) => {
+      setTimeout(() => fetchParticipantNameIfKhach(c.id, c.pageId, c.participant.id), 400 * (i + 1));
+    });
+    console.log(`[SYNC] fetchMoreConversations merged: +${convs.length}`);
   } catch (e) {
     console.error('[SYNC] fetchMoreConversations error:', e);
   } finally {
@@ -485,17 +578,36 @@ function updatePreview(
   convId: string,
   text: string | null,
   timestamp: number,
-  isFromPage: boolean
+  isFromPage: boolean,
+  pageId?: string,
+  participantId?: string
 ) {
   setConvState(
     produce((state) => {
       const idx = state.conversations.findIndex((c) => c.id === convId);
-      if (idx < 0) return;
-      state.conversations[idx].lastMessage = text || 'Tệp đính kèm';
-      state.conversations[idx].lastMessageTime = timestamp;
-      if (!isFromPage && convState.selectedId !== convId) {
-        state.conversations[idx].unreadCount =
-          (state.conversations[idx].unreadCount || 0) + 1;
+      if (idx >= 0) {
+        state.conversations[idx].lastMessage = text || 'Tệp đính kèm';
+        state.conversations[idx].lastMessageTime = timestamp;
+        if (!isFromPage && convState.selectedId !== convId) {
+          state.conversations[idx].unreadCount =
+            (state.conversations[idx].unreadCount || 0) + 1;
+        }
+      } else if (pageId && participantId) {
+        const page = authState.selectedPages.find((p) => p.id === pageId);
+        const stub: ConversationData = {
+          id: convId,
+          pageId,
+          pageName: page?.name ?? '',
+          pageAvatarUrl: page?.avatarUrl,
+          pageColor: page?.color,
+          participant: { id: participantId, name: 'Khách' },
+          lastMessage: text || 'Tệp đính kèm',
+          lastMessageTime: timestamp,
+          unreadCount: isFromPage ? 0 : 1,
+          isRead: isFromPage,
+          latestMessageId: String(timestamp),
+        };
+        state.conversations = [stub, ...state.conversations];
       }
       state.conversations.sort((a, b) => b.lastMessageTime - a.lastMessageTime);
     })

@@ -130,7 +130,7 @@ export const QuickRepliesTab = (props: Props) => {
 
       {/* Form Modal */}
       <Show when={showForm()}>
-        <div style={{ position: 'fixed', inset: '0', background: 'rgba(0,0,0,0.4)', display: 'flex', 'align-items': 'center', 'justify-content': 'center', 'z-index': '200' }}>
+        <div style={{ position: 'fixed', inset: '0', background: 'rgba(0,0,0,0.4)', display: 'flex', 'align-items': 'center', 'justify-content': 'center', 'z-index': '9999' }}>
           <div style={{ background: 'white', 'border-radius': '14px', width: '500px', 'max-height': '80vh', display: 'flex', 'flex-direction': 'column', 'box-shadow': '0 8px 40px rgba(0,0,0,0.2)' }}>
             <div style={{ padding: '20px 24px 16px', 'border-bottom': '1px solid #f0f0f0', display: 'flex', 'align-items': 'center', 'justify-content': 'space-between' }}>
               <h3 style={{ 'font-size': '16px', 'font-weight': '600' }}>{editing() ? 'Sửa tin nhắn nhanh' : 'Thêm tin nhắn nhanh'}</h3>

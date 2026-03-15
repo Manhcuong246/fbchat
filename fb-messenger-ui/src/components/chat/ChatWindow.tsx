@@ -1,4 +1,4 @@
-import { createEffect, on, For, Show, createSignal, batch } from 'solid-js';
+import { createEffect, on, For, Show, createSignal, batch, createMemo } from 'solid-js';
 import { MessageBubble, type BubblePosition } from './MessageBubble';
 import { MessageInput } from './MessageInput';
 import { msgState, setMsgState } from '../../stores/messageStore';
@@ -75,9 +75,7 @@ const DateSeparator = (props: { label: string }) => (
 );
 
 export const ChatWindow = () => {
-  let scrollAnchor: HTMLDivElement | undefined;
   let scrollContainer: HTMLDivElement | undefined;
-  const [showScrollToBottom, setShowScrollToBottom] = createSignal(false);
 
   const selectedConv = () =>
     convState.conversations.find((c) => c.id === convState.selectedId);
@@ -95,6 +93,17 @@ export const ChatWindow = () => {
     return msgState.messages[id] ?? [];
   };
 
+  /** Lọc bỏ tin nhắn rỗng (giao dịch thanh toán, hasAttachment không parse được, v.v.) */
+  const displayMessages = createMemo(() => {
+    const list = messages();
+    return list.filter((msg) => {
+      const hasText = msg.text != null && String(msg.text).trim() !== '';
+      const hasMedias = (msg.medias && msg.medias.length > 0) || msg.media;
+      // hasAttachment alone (không có medias) = payment/transaction không render được — ẩn
+      return hasText || hasMedias;
+    });
+  });
+
   createEffect(
     on(
       () => convState.selectedId,
@@ -108,11 +117,6 @@ export const ChatWindow = () => {
       { defer: true }
     )
   );
-
-  createEffect(() => {
-    convState.selectedId;
-    setShowScrollToBottom(false);
-  });
 
   // Cuộn xuống dưới sau khi DOM đã render tin mới — double rAF đảm bảo layout xong
   createEffect(() => {
@@ -263,17 +267,17 @@ export const ChatWindow = () => {
       await new Promise((r) => setTimeout(r, 100));
     }
 
-    // Update conversation preview: chỉ cập nhật 1 conv và đưa lên đầu, tránh re-sort toàn bộ
+    // Update conversation preview: cập nhật 1 conv và đưa lên đầu (sort theo lastMessageTime)
     const preview = text.trim() || (libraryImages?.length ? `${libraryImages.length} ảnh` : '') || (imageBase64 ? 'Ảnh' : '');
-    if (id && (text.trim() || libraryImages?.length || imageBase64)) {
+    if (id && conv && (text.trim() || libraryImages?.length || imageBase64)) {
       batch(() => {
         const list = convState.conversations;
         const idx = list.findIndex((c) => c.id === id);
-        if (idx >= 0) {
-          const updated = { ...list[idx], lastMessage: preview, lastMessageTime: Date.now() };
-          const rest = [...list.slice(0, idx), ...list.slice(idx + 1)];
-          setConvState('conversations', [updated, ...rest]);
-        }
+        const updated = { ...conv, lastMessage: preview, lastMessageTime: Date.now() };
+        const next = idx >= 0
+          ? [updated, ...list.slice(0, idx), ...list.slice(idx + 1)]
+          : [updated, ...list];
+        setConvState('conversations', next.sort((a, b) => b.lastMessageTime - a.lastMessageTime));
       });
     }
   };
@@ -367,27 +371,20 @@ export const ChatWindow = () => {
 
   return (
     <div
+      class="chat-window-root"
       style={{
         display: 'flex',
         'flex-direction': 'column',
         height: '100%',
         overflow: 'hidden',
-        background: 'var(--color-bg-primary)',
+        position: 'relative',
       }}
     >
+      <div class="chat-bg-layer" aria-hidden />
       <Show
         when={convState.selectedId}
         fallback={
-          <div
-            style={{
-              flex: '1',
-              display: 'flex',
-              'flex-direction': 'column',
-              'align-items': 'center',
-              'justify-content': 'center',
-              background: 'var(--color-bg-chat)',
-            }}
-          >
+          <div class="empty-chat-placeholder">
             <div
               style={{
                 background: 'rgba(0,0,0,0.2)',
@@ -411,7 +408,7 @@ export const ChatWindow = () => {
             'border-bottom': '1px solid rgba(0,0,0,0.08)',
             display: 'flex', 'align-items': 'center', gap: '10px',
             'box-shadow': '0 1px 3px rgba(0,0,0,0.06)',
-            position: 'relative', 'z-index': '10', 'flex-shrink': '0',
+            position: 'relative', 'z-index': '0', 'flex-shrink': '0',
           }}>
             {/* Back button — hiển thị trên mobile */}
             <button
@@ -430,7 +427,7 @@ export const ChatWindow = () => {
               </svg>
             </button>
             {/* Avatar */}
-            <Avatar name={selectedConv()?.participant.name ?? '?'} size={40} avatarUrl={selectedConv()?.participant.avatarUrl} />
+            <Avatar name={selectedConv()?.participant.name ?? '?'} size={40} avatarUrl={selectedConv()?.participant.avatarUrl} psid={selectedConv()?.participant.id} />
 
             {/* Info */}
             <div style={{ flex: '1', 'min-width': '0', display: 'flex', 'flex-direction': 'column', 'justify-content': 'center', gap: '1px', cursor: 'pointer' }}>
@@ -484,69 +481,55 @@ export const ChatWindow = () => {
               flex: 1,
               'min-height': 0,
               position: 'relative',
-              display: 'flex',
-              'flex-direction': 'column',
               overflow: 'hidden',
-              background: 'var(--color-bg-chat)',
             }}
           >
+            {/* Scroll ở lề ngoài (full width) - giống Telegram */}
             <div
               ref={(el) => (scrollContainer = el)}
-              class="message-list"
+              class="chat-scroll-outer"
               onScroll={() => {
                 if (!scrollContainer || msgState.loadingMore) return;
                 if (scrollContainer.scrollTop < 100) loadMoreMessages();
-                const atBottom =
-                  scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight < 50;
-                setShowScrollToBottom(!atBottom);
               }}
             >
-              <Show when={msgState.loading && messages().length === 0}>
-                <div style={{ flex: 1, display: 'flex', 'align-items': 'center', 'justify-content': 'center', color: '#8a8a8a', 'min-height': '120px' }}>
-                  Loading...
+              <div class="chat-content-column chat-scroll-content">
+                <Show when={msgState.loading && messages().length === 0}>
+                  <div style={{ flex: 1, display: 'flex', 'align-items': 'center', 'justify-content': 'center', color: '#8a8a8a', 'min-height': '120px' }}>
+                    Loading...
+                  </div>
+                </Show>
+                <div class="message-list-inner">
+                  <For each={displayMessages()}>
+                    {(msg, i) => {
+                      const list = displayMessages();
+                      const idx = i();
+                      const dateLabel = shouldShowDate(list, idx);
+                      return (
+                        <>
+                          {dateLabel != null && <DateSeparator label={dateLabel} />}
+                          <MessageBubble
+                            message={msg}
+                            position={getBubblePosition(list, idx)}
+                            token={getPage()?.accessToken}
+                            onRetry={handleRetry}
+                          />
+                        </>
+                      );
+                    }}
+                  </For>
+                  <div id="messages-bottom" style={{ height: '1px' }} />
                 </div>
-              </Show>
-              <For each={messages()}>
-                {(msg, i) => {
-                  const list = messages();
-                  const idx = i();
-                  const dateLabel = shouldShowDate(list, idx);
-                  return (
-                    <>
-                      {dateLabel != null && <DateSeparator label={dateLabel} />}
-                      <MessageBubble
-                        message={msg}
-                        position={getBubblePosition(list, idx)}
-                        token={getPage()?.accessToken}
-                        onRetry={handleRetry}
-                      />
-                    </>
-                  );
-                }}
-              </For>
-              <div id="messages-bottom" ref={(el) => (scrollAnchor = el)} style={{ height: '1px' }} />
+              </div>
             </div>
-            {showScrollToBottom() && (
-              <button
-                type="button"
-                class="scroll-to-bottom"
-                onClick={() => {
-                  scrollAnchor?.scrollIntoView({ behavior: 'smooth' });
-                  setShowScrollToBottom(false);
-                }}
-              >
-                ↓ Tin nhắn mới
-              </button>
-            )}
-          </div>
-
-          <div style={{ 'flex-shrink': 0 }}>
-            <MessageInput
-            pageId={selectedConv()?.pageId}
-            onSend={handleSend}
-            onQuickReply={sendQuickReply}
-            disabled={msgState.loading}
-          />
+            <div class="chat-content-column" style={{ 'flex-shrink': 0 }}>
+              <MessageInput
+                pageId={selectedConv()?.pageId}
+                onSend={handleSend}
+                onQuickReply={sendQuickReply}
+                disabled={msgState.loading}
+              />
+            </div>
           </div>
         </>
       </Show>

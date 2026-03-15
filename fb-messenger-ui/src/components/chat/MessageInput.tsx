@@ -1,4 +1,4 @@
-import { createSignal, Show, For, createMemo, createEffect } from 'solid-js';
+import { createSignal, Show, For, createMemo, createEffect, onMount, onCleanup } from 'solid-js';
 import { IconLightning, IconClose, IconImage } from '../shared/Icons';
 import type { QuickReply } from '../../services/quickReplyService';
 import { quickReplies, loadQuickReplies } from '../../stores/quickReplyStore';
@@ -29,9 +29,11 @@ export const MessageInput = (props: Props) => {
   const [hoveredToolbar, setHoveredToolbar] = createSignal<string | null>(null);
   const [sendBtnHover, setSendBtnHover] = createSignal(false);
   const [sendBtnActive, setSendBtnActive] = createSignal(false);
-  const [dragHandleHover, setDragHandleHover] = createSignal(false);
+  const [isToolbarCompact, setIsToolbarCompact] = createSignal(false);
+  const [showToolbarMenu, setShowToolbarMenu] = createSignal(false);
   let textareaEl: HTMLTextAreaElement | undefined;
   let imageInputEl: HTMLInputElement | undefined;
+  let toolbarContainerEl: HTMLDivElement | undefined;
 
   const setRef = (el: HTMLTextAreaElement) => {
     textareaEl = el;
@@ -41,6 +43,32 @@ export const MessageInput = (props: Props) => {
   createEffect(() => {
     const pid = props.pageId;
     if (pid) void loadQuickReplies(pid);
+  });
+
+  onMount(() => {
+    const mq = window.matchMedia('(max-width: 768px)');
+    const update = () => setIsToolbarCompact(mq.matches);
+    update();
+    mq.addEventListener('change', update);
+    onCleanup(() => mq.removeEventListener('change', update));
+  });
+
+  createEffect(() => {
+    if (!showToolbarMenu()) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (toolbarContainerEl && !toolbarContainerEl.contains(e.target as Node)) {
+        setShowToolbarMenu(false);
+      }
+    };
+    document.addEventListener('click', onDocClick);
+    onCleanup(() => document.removeEventListener('click', onDocClick));
+  });
+
+  createEffect(() => {
+    const open = hasPopupOpen();
+    if (open) document.body.classList.add('menu-open-input');
+    else document.body.classList.remove('menu-open-input');
+    onCleanup(() => document.body.classList.remove('menu-open-input'));
   });
 
   const allReplies = () => quickReplies;
@@ -177,34 +205,6 @@ export const MessageInput = (props: Props) => {
   };
 
   const textareaRef: { current: HTMLTextAreaElement | undefined } = { current: undefined };
-  const dragState = { isDragging: false, startY: 0, startHeight: 0 };
-
-  const handleDragStart = (e: MouseEvent) => {
-    if (props.disabled) return;
-    dragState.isDragging = true;
-    dragState.startY = e.clientY;
-    dragState.startHeight = textareaRef.current?.offsetHeight ?? 44;
-    document.body.style.cursor = 'ns-resize';
-    document.body.style.userSelect = 'none';
-
-    const handleMouseMove = (ev: MouseEvent) => {
-      if (!dragState.isDragging || !textareaRef.current) return;
-      const delta = dragState.startY - ev.clientY;
-      const newHeight = Math.max(44, Math.min(dragState.startHeight + delta, window.innerHeight * 0.4));
-      textareaRef.current.style.height = newHeight + 'px';
-    };
-
-    const handleMouseUp = () => {
-      dragState.isDragging = false;
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-  };
 
   const hasText = () => canSend();
   const toolbarBtnStyle = (key: string) => ({
@@ -222,23 +222,42 @@ export const MessageInput = (props: Props) => {
     'flex-shrink': '0',
   });
 
-  const hasPopupOpen = () => showQuickReplies() || showLibrary() || showSuggest();
+  const toolbarMenuBtnStyle = () =>
+    ({
+      display: 'flex',
+      alignItems: 'center',
+      gap: '10px',
+      padding: '10px 12px',
+      border: 'none',
+      background: 'none',
+      cursor: props.disabled ? 'default' : 'pointer',
+      fontSize: '14px',
+      color: '#1c1e21',
+      borderRadius: '8px',
+      width: '100%',
+      textAlign: 'left',
+      transition: 'background 150ms',
+    }) as import('solid-js').JSX.CSSProperties;
+
+  const hasPopupOpen = () => showQuickReplies() || showLibrary() || showSuggest() || showToolbarMenu();
 
   return (
     <div
       class="message-input-wrapper"
       style={{
-        background: '#ffffff',
-        'border-top': '1px solid rgba(0,0,0,0.08)',
-        padding: '10px 16px 12px',
+        background: 'transparent',
+        'border-top': '1px solid rgba(0,0,0,0.06)',
+        padding: '12px 16px',
         display: 'flex',
         'flex-direction': 'column',
+        'align-items': 'center',
         gap: '8px',
         'flex-shrink': '0',
         'max-height': '50vh',
         overflow: hasPopupOpen() ? 'visible' : 'hidden',
       }}
     >
+      <div class="message-input-inner">
       {/* Library images preview */}
       <Show when={pendingImages().length > 0}>
         <div
@@ -250,7 +269,7 @@ export const MessageInput = (props: Props) => {
             'overflow-x': 'auto',
             'flex-shrink': '0',
             'flex-wrap': 'nowrap',
-            background: '#f8f9fa',
+            background: 'rgba(255,255,255,0.2)',
           }}
         >
           <For each={pendingImages()}>
@@ -308,63 +327,6 @@ export const MessageInput = (props: Props) => {
         </div>
       </Show>
 
-      {/* Drag handle */}
-      <div
-        style={{
-          width: '100%',
-          height: '4px',
-          cursor: 'ns-resize',
-          display: 'flex',
-          'align-items': 'center',
-          'justify-content': 'center',
-          'margin-bottom': '2px',
-        }}
-        onMouseDown={handleDragStart}
-        onMouseEnter={() => setDragHandleHover(true)}
-        onMouseLeave={() => setDragHandleHover(false)}
-        role="button"
-        tabIndex={0}
-        aria-label="Kéo để thay đổi kích thước"
-      >
-        <div
-          style={{
-            width: '36px',
-            height: '3px',
-            background: dragHandleHover() ? 'rgba(0,0,0,0.2)' : 'rgba(0,0,0,0.1)',
-            'border-radius': '2px',
-            transition: 'background 150ms',
-          }}
-        />
-      </div>
-
-      {/* Toolbar */}
-      <div
-        style={{
-          display: 'flex',
-          'align-items': 'center',
-          gap: '2px',
-          padding: '0 4px',
-        }}
-      >
-        <button type="button" onClick={triggerImageInput} title="Đính kèm" disabled={props.disabled} style={toolbarBtnStyle('attach')} onMouseEnter={() => setHoveredToolbar('attach')} onMouseLeave={() => setHoveredToolbar(null)}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
-        </button>
-        <button type="button" onClick={triggerImageInput} title="Gửi ảnh" disabled={props.disabled} style={toolbarBtnStyle('photo')} onMouseEnter={() => setHoveredToolbar('photo')} onMouseLeave={() => setHoveredToolbar(null)}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21,15 16,10 5,21"/></svg>
-        </button>
-        <button type="button" class={showQuickReplies() ? 'active' : ''} onClick={() => setShowQuickReplies((v) => !v)} title="Tin nhắn nhanh" disabled={props.disabled} style={toolbarBtnStyle('quickreply')} onMouseEnter={() => setHoveredToolbar('quickreply')} onMouseLeave={() => setHoveredToolbar(null)}>
-          <IconLightning size={18} />
-        </button>
-        <Show when={props.pageId}>
-          <button type="button" onClick={() => setShowLibrary(true)} title="Thư viện ảnh" disabled={props.disabled} style={toolbarBtnStyle('library')} onMouseEnter={() => setHoveredToolbar('library')} onMouseLeave={() => setHoveredToolbar(null)}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-          </button>
-        </Show>
-        <button type="button" title="Emoji" disabled style={{ ...toolbarBtnStyle('emoji'), opacity: 0.4 }} onMouseEnter={() => setHoveredToolbar('emoji')} onMouseLeave={() => setHoveredToolbar(null)}>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
-        </button>
-      </div>
-
       <input ref={(el) => (imageInputEl = el)} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleImageSelect} />
 
       {/* Image preview (file picker) */}
@@ -381,57 +343,121 @@ export const MessageInput = (props: Props) => {
         </div>
       </Show>
 
-      {/* Textarea row: textarea container + send button */}
+      {/* Input box: icons + textarea + send - căn chuẩn */}
       <div
         style={{
           display: 'flex',
-          'align-items': 'flex-end',
-          gap: '10px',
+          'align-items': 'center',
+          gap: '8px',
+          background: '#ffffff',
+          'border-radius': '24px',
+          padding: '10px 14px 10px 18px',
+          'min-height': '52px',
+          'max-height': '200px',
+          border: isInputFocused() ? '1.5px solid #3390ec' : '1px solid rgba(0,0,0,0.12)',
+          'box-shadow': isInputFocused() ? '0 0 0 3px rgba(51,144,236,0.1)' : '0 1px 3px rgba(0,0,0,0.08)',
+          transition: 'border 150ms, box-shadow 150ms',
+          'box-sizing': 'border-box',
         }}
       >
-        <div
+        {/* Icons bên trái - gọn trên mobile: 1 nút mở menu */}
+        <div ref={(el) => (toolbarContainerEl = el)} style={{ position: 'relative', display: 'flex', 'align-items': 'center', gap: '2px', 'flex-shrink': 0, 'align-self': 'center' }}>
+          <Show
+            when={!isToolbarCompact()}
+            fallback={
+              <>
+                <button
+                  type="button"
+                  onClick={() => setShowToolbarMenu((v) => !v)}
+                  title="Thêm"
+                  disabled={props.disabled}
+                  style={{
+                    ...toolbarBtnStyle('menu'),
+                    background: showToolbarMenu() ? '#f1f3f4' : 'none',
+                    color: showToolbarMenu() ? '#3390ec' : '#707579',
+                  }}
+                >
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
+                </button>
+                <Show when={showToolbarMenu()}>
+                  <div
+                    role="menu"
+                    style={{
+                      position: 'absolute',
+                      bottom: '100%',
+                      left: 0,
+                      'margin-bottom': '6px',
+                      background: '#ffffff',
+                      'border-radius': '12px',
+                      'box-shadow': '0 4px 20px rgba(0,0,0,0.15)',
+                      padding: '6px',
+                      display: 'flex',
+                      'flex-direction': 'column',
+                      gap: '2px',
+                      'min-width': '160px',
+                      'z-index': 110,
+                    }}
+                  >
+                    <button type="button" class="toolbar-menu-btn" onClick={() => { triggerImageInput(); setShowToolbarMenu(false); }} style={toolbarMenuBtnStyle()}><span style={{ width: '20px', display: 'flex' }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></span>Đính kèm</button>
+                    <button type="button" class="toolbar-menu-btn" onClick={() => { triggerImageInput(); setShowToolbarMenu(false); }} style={toolbarMenuBtnStyle()}><span style={{ width: '20px', display: 'flex' }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21,15 16,10 5,21"/></svg></span>Gửi ảnh</button>
+                    <button type="button" class="toolbar-menu-btn" onClick={() => { setShowQuickReplies(true); setShowToolbarMenu(false); }} style={toolbarMenuBtnStyle()}><span style={{ width: '20px', display: 'flex' }}><IconLightning size={18} /></span>Tin nhắn nhanh</button>
+                    <Show when={props.pageId}>
+                      <button type="button" class="toolbar-menu-btn" onClick={() => { setShowLibrary(true); setShowToolbarMenu(false); }} style={toolbarMenuBtnStyle()}><span style={{ width: '20px', display: 'flex' }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></span>Thư viện ảnh</button>
+                    </Show>
+                  </div>
+                </Show>
+              </>
+            }
+          >
+            <button type="button" onClick={triggerImageInput} title="Đính kèm" disabled={props.disabled} style={toolbarBtnStyle('attach')} onMouseEnter={() => setHoveredToolbar('attach')} onMouseLeave={() => setHoveredToolbar(null)}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+            </button>
+            <button type="button" onClick={triggerImageInput} title="Gửi ảnh" disabled={props.disabled} style={toolbarBtnStyle('photo')} onMouseEnter={() => setHoveredToolbar('photo')} onMouseLeave={() => setHoveredToolbar(null)}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21,15 16,10 5,21"/></svg>
+            </button>
+            <button type="button" class={showQuickReplies() ? 'active' : ''} onClick={() => setShowQuickReplies((v) => !v)} title="Tin nhắn nhanh" disabled={props.disabled} style={toolbarBtnStyle('quickreply')} onMouseEnter={() => setHoveredToolbar('quickreply')} onMouseLeave={() => setHoveredToolbar(null)}>
+              <IconLightning size={18} />
+            </button>
+            <Show when={props.pageId}>
+              <button type="button" onClick={() => setShowLibrary(true)} title="Thư viện ảnh" disabled={props.disabled} style={toolbarBtnStyle('library')} onMouseEnter={() => setHoveredToolbar('library')} onMouseLeave={() => setHoveredToolbar(null)}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+              </button>
+            </Show>
+            <button type="button" title="Emoji" disabled style={{ ...toolbarBtnStyle('emoji'), opacity: 0.4 }} onMouseEnter={() => setHoveredToolbar('emoji')} onMouseLeave={() => setHoveredToolbar(null)}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
+            </button>
+          </Show>
+        </div>
+        <textarea
+          ref={setRef}
+          class="message-textarea message-input-placeholder"
+          placeholder="Nhập tin nhắn... "
+          value={text()}
+          onInput={handleInput}
+          onKeyDown={handleKeyDown}
+          onFocus={() => setInputFocused(true)}
+          onBlur={() => setInputFocused(false)}
+          rows={1}
+          disabled={props.disabled}
           style={{
             flex: '1',
-            background: isInputFocused() ? '#ffffff' : '#f1f3f4',
-            'border-radius': '22px',
-            padding: '10px 16px',
-            display: 'flex',
-            'align-items': 'flex-end',
-            'min-height': '44px',
-            'max-height': '200px',
-            transition: 'background 150ms',
-            border: isInputFocused() ? '1.5px solid #3390ec' : '1.5px solid transparent',
-            'box-shadow': isInputFocused() ? '0 0 0 3px rgba(51,144,236,0.1)' : 'none',
+            'min-width': '0',
+            border: 'none',
+            outline: 'none',
+            background: 'transparent',
+            'font-size': '16px',
+            'line-height': '1.4',
+            color: '#000',
+            resize: 'none',
+            'min-height': '28px',
+            'max-height': '160px',
+            'overflow-y': 'auto',
+            'font-family': 'inherit',
+            padding: '8px 0',
+            margin: '0',
+            'box-sizing': 'border-box',
           }}
-        >
-          <textarea
-            ref={setRef}
-            class="message-textarea message-input-placeholder"
-            placeholder="Nhập tin nhắn... (gõ / để dùng tin nhắn nhanh)"
-            value={text()}
-            onInput={handleInput}
-            onKeyDown={handleKeyDown}
-            onFocus={() => setInputFocused(true)}
-            onBlur={() => setInputFocused(false)}
-            rows={1}
-            disabled={props.disabled}
-            style={{
-              flex: '1',
-              border: 'none',
-              outline: 'none',
-              background: 'transparent',
-              'font-size': '15px',
-              'line-height': '1.5',
-              color: '#000',
-              resize: 'none',
-              'min-height': '24px',
-              'max-height': '160px',
-              'overflow-y': 'auto',
-              'font-family': 'inherit',
-              padding: '0',
-            }}
-          />
-        </div>
+        />
         <button
           type="button"
           disabled={!hasText()}
@@ -442,9 +468,10 @@ export const MessageInput = (props: Props) => {
           onMouseDown={() => setSendBtnActive(true)}
           onMouseUp={() => setSendBtnActive(false)}
           style={{
-            width: '44px',
-            height: '44px',
-            'min-width': '44px',
+            width: '40px',
+            height: '40px',
+            'min-width': '40px',
+            'min-height': '40px',
             'border-radius': '50%',
             border: 'none',
             background: hasText() ? '#3390ec' : '#e8e8e8',
@@ -479,7 +506,7 @@ export const MessageInput = (props: Props) => {
             'box-shadow': '0 -4px 20px rgba(0,0,0,0.1)',
             'max-height': '200px',
             overflow: 'auto',
-            'z-index': 100,
+            'z-index': 9999,
           }}
         >
           <For each={suggestReplies()}>
@@ -545,7 +572,7 @@ export const MessageInput = (props: Props) => {
             'border-top': '1px solid var(--color-border)',
             'max-height': '280px',
             'overflow-y': 'auto',
-            'z-index': 101,
+            'z-index': 9999,
           }}
         >
           <div
@@ -617,6 +644,7 @@ export const MessageInput = (props: Props) => {
           </div>
         </div>
       </Show>
+      </div>
     </div>
   );
 };

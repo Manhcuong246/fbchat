@@ -122,7 +122,7 @@ export function startPollingFallback(pages: PageInfo[]): () => void {
         );
         if (res.ok) {
           const data = (await res.json()) as { hasChanges?: boolean };
-          if (data.hasChanges) await fetchConversations(page.id);
+          if (data.hasChanges) await fetchConversations();
         }
       } catch {}
       timers.push(setTimeout(poll, 30000));

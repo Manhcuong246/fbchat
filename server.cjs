@@ -113,8 +113,15 @@ async function getCached(key, ttl, fetchFn) {
 }
 
 // Map DB conversation row to FB API shape (for frontend compatibility)
-function mapDbConvToFbShape(row) {
-  return {
+function mapDbConvToFbShape(row, includePageId = false) {
+  let snippet = row.last_message || '';
+  if (!snippet) {
+    const latest = dbModule.getLatestMessage(row.id);
+    if (latest) {
+      snippet = latest.text || (latest.has_attachment ? 'Tệp đính kèm' : '');
+    }
+  }
+  const base = {
     id: row.id,
     participants: {
       data: [{
@@ -123,10 +130,12 @@ function mapDbConvToFbShape(row) {
         picture: row.participant_picture_url || undefined,
       }],
     },
-    snippet: row.last_message || '',
+    snippet,
     updated_time: row.last_message_time ? new Date(row.last_message_time).toISOString() : '',
     unread_count: row.unread_count || 0,
   };
+  if (includePageId && row.page_id) base.page_id = row.page_id;
+  return base;
 }
 
 // Map DB message row to FB API shape (includes is_from_page for client)
@@ -281,7 +290,7 @@ app.post('/webhook', (req, res) => {
             participant_id: senderId,
             participant_name: 'Unknown',
             participant_picture_url: null,
-            last_message: event.message.text || '',
+            last_message: event.message.text || ((event.message.attachments?.length || 0) > 0 ? 'Tệp đính kèm' : ''),
             last_message_time: timestamp * 1000,
             unread_count: 1,
             updated_at: Date.now(),
@@ -469,9 +478,12 @@ app.get('/api/auth/pages', async (req, res) => {
 
 // ── SUBSCRIBE PAGE TO WEBHOOK (bắt buộc để nhận tin nhắn) ──
 app.post('/api/subscribe-page', async (req, res) => {
-  const { pageId, pageAccessToken } = req.body;
+  const { pageId, pageAccessToken } = req.body || {};
   if (!pageId || !pageAccessToken) {
-    return res.status(400).json({ error: 'Missing pageId or pageAccessToken' });
+    const missing = [];
+    if (!pageId) missing.push('pageId');
+    if (!pageAccessToken) missing.push('pageAccessToken');
+    return res.status(400).json({ error: `Missing: ${missing.join(', ')}` });
   }
   try {
     const url = `${FB_API}/${pageId}/subscribed_apps`
@@ -603,9 +615,14 @@ app.get('/api/conversations', async (req, res) => {
     const mapped = dbConvs.map((row) => {
       let participantName = row.participant_name;
       if (participantName === 'Unknown' || !participantName) {
-        const latest = dbModule.getLatestMessage(row.id);
-        if (latest && latest.is_from_page === 0 && latest.sender_name) {
-          participantName = latest.sender_name;
+        const fromParticipant = dbModule.getLatestParticipantMessage(row.id);
+        if (fromParticipant?.sender_name) {
+          participantName = fromParticipant.sender_name;
+        } else {
+          const latest = dbModule.getLatestMessage(row.id);
+          if (latest && latest.is_from_page === 0 && latest.sender_name) {
+            participantName = latest.sender_name;
+          }
         }
       }
       return mapDbConvToFbShape({ ...row, participant_name: participantName });
@@ -633,6 +650,204 @@ app.get('/api/conversations', async (req, res) => {
   }
   res.setHeader('X-Cache', 'MISS');
   res.json({ data: mapped, source: 'facebook', afterCursor: fbNextCursor, hasMore: !!fbNextCursor });
+});
+
+// ── CONVERSATIONS MERGED: 20 tổng cộng cho tất cả pages (không phải 20/page) ──
+const MERGED_PAGE_SIZE = 20;
+
+/** Lấy từ Facebook tất cả pages, merge và sort theo updated_time mới nhất (giống pancake.vn) */
+async function fetchMergedFromFacebook(tokenByPage, pageSize) {
+  const pageIdList = Array.from(tokenByPage.keys());
+  const results = await Promise.allSettled(
+    pageIdList.map((pageId) => fetchConversationsFromFacebook(tokenByPage.get(pageId), pageId, 50))
+  );
+  const allConvs = [];
+  results.forEach((result, i) => {
+    if (result.status === 'fulfilled' && result.value?.data) {
+      const pageId = pageIdList[i];
+      transformAndSaveConversations(result.value, pageId);
+      (result.value.data || []).forEach((c) => {
+        const participant = c.participants?.data?.find((p) => p.id !== pageId);
+        const ts = new Date(c.updated_time || 0).getTime();
+        allConvs.push({
+          id: c.id,
+          page_id: pageId,
+          participant_id: participant?.id || '',
+          participant_name: participant?.name || 'Unknown',
+          participant_picture_url: participant?.picture?.data?.url || null,
+          snippet: c.snippet || '',
+          updated_time: c.updated_time || '',
+          unread_count: c.unread_count || 0,
+          _ts: ts,
+        });
+      });
+    }
+  });
+  const byKey = new Map();
+  allConvs.forEach((c) => {
+    const key = `${c.page_id}:${c.participant_id}`;
+    const existing = byKey.get(key);
+    if (!existing || c._ts > existing._ts) byKey.set(key, c);
+  });
+  return Array.from(byKey.values())
+    .sort((a, b) => b._ts - a._ts)
+    .slice(0, pageSize);
+}
+
+app.get('/api/conversations/merged', async (req, res) => {
+  const { pageIds, tokens, limit, after } = req.query;
+  if (!pageIds || !tokens) {
+    return res.status(400).json({ error: 'Missing pageIds or tokens' });
+  }
+  const pageIdList = pageIds.split(',').map((s) => s.trim()).filter(Boolean);
+  let tokenList;
+  try {
+    tokenList = JSON.parse(tokens);
+  } catch {
+    return res.status(400).json({ error: 'Invalid tokens JSON' });
+  }
+  if (!Array.isArray(tokenList) || pageIdList.length !== tokenList.length) {
+    return res.status(400).json({ error: 'Invalid tokens: must match pageIds length' });
+  }
+  const tokenByPage = new Map(pageIdList.map((p, i) => [p, tokenList[i]]));
+  const pageSize = Math.min(parseInt(limit, 10) || MERGED_PAGE_SIZE, 50);
+  const afterCursor = after && String(after).trim() ? String(after) : null;
+  const afterTs = afterCursor && /^\d+$/.test(afterCursor) ? parseInt(afterCursor, 10) : null;
+  const isLoadMore = !!afterCursor;
+
+  const memKey = `convs_merged:${[...pageIdList].sort().join(',')}`;
+
+  if (!isLoadMore) {
+    const mem = cache.get(memKey);
+    if (mem) {
+      const enriched = await enrichParticipantNames(mem, tokenByPage);
+      const lastItem = enriched.length > 0 ? enriched[enriched.length - 1] : null;
+      const nextCursor = lastItem?.updated_time ? String(new Date(lastItem.updated_time).getTime()) : null;
+      res.setHeader('X-Cache', 'HIT');
+      return res.json({ data: enriched, source: 'memory', afterCursor: nextCursor, hasMore: enriched.length >= pageSize });
+    }
+  }
+
+  if (!isLoadMore) {
+    const fbMerged = await fetchMergedFromFacebook(tokenByPage, pageSize);
+    if (fbMerged.length > 0) {
+      const mapped = fbMerged.map((c) => mapDbConvToFbShape({
+        id: c.id,
+        page_id: c.page_id,
+        participant_id: c.participant_id,
+        participant_name: c.participant_name,
+        participant_picture_url: c.participant_picture_url,
+        last_message: c.snippet,
+        last_message_time: c._ts,
+        unread_count: c.unread_count,
+      }, true));
+      const enriched = await enrichParticipantNames(mapped, tokenByPage);
+      const lastTs = enriched.length > 0 && enriched[enriched.length - 1].updated_time
+        ? new Date(enriched[enriched.length - 1].updated_time).getTime() : null;
+      cache.set(memKey, enriched, 30);
+      const stillKhach = enriched.filter((c) => {
+        const name = c.participants?.data?.[0]?.name;
+        return !name || name === 'Unknown';
+      });
+      stillKhach.forEach((c, i) => {
+        const pageId = c.page_id;
+        const token = tokenByPage.get(pageId);
+        if (token && c.id) {
+          setTimeout(() => syncMessagesBackground(token, pageId, c.id).catch(() => {}), 500 * (i + 1));
+        }
+      });
+      res.setHeader('X-Cache', 'MISS');
+      return res.json({ data: enriched, source: 'facebook', afterCursor: lastTs ? String(lastTs) : null, hasMore: fbMerged.length >= pageSize });
+    }
+  }
+
+  const dbConvs = dbModule.getConversationsByPagesPaginated(pageIdList, pageSize, afterTs);
+  if (dbConvs.length > 0) {
+    let mapped = dbConvs.map((row) => {
+      let participantName = row.participant_name;
+      if (participantName === 'Unknown' || !participantName) {
+        const fromParticipant = dbModule.getLatestParticipantMessage(row.id);
+        if (fromParticipant?.sender_name) {
+          participantName = fromParticipant.sender_name;
+        } else {
+          const latest = dbModule.getLatestMessage(row.id);
+          if (latest && latest.is_from_page === 0 && latest.sender_name) {
+            participantName = latest.sender_name;
+          }
+        }
+      }
+      return mapDbConvToFbShape({ ...row, participant_name: participantName }, true);
+    });
+    mapped = await enrichParticipantNames(mapped, tokenByPage);
+    const lastTs = mapped.length > 0 ? (mapped[mapped.length - 1].updated_time ? new Date(mapped[mapped.length - 1].updated_time).getTime() : null) : null;
+    const nextCursor = lastTs ? String(lastTs) : null;
+    if (!isLoadMore) {
+      cache.set(memKey, mapped, 30);
+      pageIdList.forEach((pageId, i) => {
+        if (tokenList[i]) syncConversationsBackground(tokenList[i], pageId).catch(console.error);
+      });
+      const stillKhach = mapped.filter((c) => {
+        const name = c.participants?.data?.[0]?.name;
+        return !name || name === 'Unknown';
+      });
+      stillKhach.forEach((c, i) => {
+        const pageId = c.page_id;
+        const token = tokenByPage.get(pageId);
+        if (token && c.id) {
+          setTimeout(() => syncMessagesBackground(token, pageId, c.id).catch(() => {}), 500 * (i + 1));
+        }
+      });
+    }
+    res.setHeader('X-Cache', 'DB');
+    return res.json({ data: mapped, source: 'sqlite', afterCursor: nextCursor, hasMore: dbConvs.length >= pageSize });
+  }
+
+  if (!isLoadMore) {
+    const allFetched = await Promise.allSettled(
+      pageIdList.map((pageId, i) => fetchConversationsFromFacebook(tokenList[i], pageId, 50))
+    );
+    allFetched.forEach((result, i) => {
+      if (result.status === 'fulfilled' && result.value) {
+        transformAndSaveConversations(result.value, pageIdList[i]);
+      }
+    });
+    const retryConvs = dbModule.getConversationsByPagesPaginated(pageIdList, pageSize, null);
+    if (retryConvs.length > 0) {
+      let mapped = retryConvs.map((row) => {
+        let participantName = row.participant_name;
+        if (participantName === 'Unknown' || !participantName) {
+          const fromParticipant = dbModule.getLatestParticipantMessage(row.id);
+          if (fromParticipant?.sender_name) {
+            participantName = fromParticipant.sender_name;
+          } else {
+            const latest = dbModule.getLatestMessage(row.id);
+            if (latest && latest.is_from_page === 0 && latest.sender_name) {
+              participantName = latest.sender_name;
+            }
+          }
+        }
+        return mapDbConvToFbShape({ ...row, participant_name: participantName }, true);
+      });
+      mapped = await enrichParticipantNames(mapped, tokenByPage);
+      const lastTs = mapped.length > 0 ? (mapped[mapped.length - 1].updated_time ? new Date(mapped[mapped.length - 1].updated_time).getTime() : null) : null;
+      cache.set(memKey, mapped, 30);
+      const stillKhach = mapped.filter((c) => {
+        const name = c.participants?.data?.[0]?.name;
+        return !name || name === 'Unknown';
+      });
+      stillKhach.forEach((c, i) => {
+        const pageId = c.page_id;
+        const token = tokenByPage.get(pageId);
+        if (token && c.id) {
+          setTimeout(() => syncMessagesBackground(token, pageId, c.id).catch(() => {}), 500 * (i + 1));
+        }
+      });
+      res.setHeader('X-Cache', 'MISS');
+      return res.json({ data: mapped, source: 'facebook', afterCursor: lastTs ? String(lastTs) : null, hasMore: retryConvs.length >= pageSize });
+    }
+  }
+
+  res.json({ data: [], source: 'empty', afterCursor: null, hasMore: false });
 });
 
 // ── SEARCH: Tìm conversations từ tất cả pages ──
@@ -687,6 +902,56 @@ app.get('/api/search', async (req, res) => {
   }
 });
 
+// ── Lấy tên user từ Facebook khi API conversations trả Unknown ──
+async function fetchUserNameFromFacebook(token, userId) {
+  if (!userId || !token) return null;
+  const cacheKey = `user_name:${userId}`;
+  const cached = cache.get(cacheKey);
+  if (cached) return cached;
+  try {
+    const url = `${FB_API}/${userId}?fields=name&access_token=${token}`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const name = data.name || null;
+    if (name) cache.set(cacheKey, name, 3600);
+    return name;
+  } catch { return null; }
+}
+
+/** Enrich participant names từ Facebook User API khi Unknown. */
+async function enrichParticipantNames(mapped, tokenByPage) {
+  const enriched = await Promise.all(mapped.map(async (c) => {
+    const pageId = c.page_id;
+    const participant = c.participants?.data?.[0];
+    const currentName = participant?.name;
+    if (currentName && currentName !== 'Unknown') return c;
+    const participantId = participant?.id;
+    if (!participantId || !pageId) return c;
+    const token = tokenByPage.get(pageId);
+    if (!token) return c;
+    const name = await fetchUserNameFromFacebook(token, participantId);
+    if (!name) return c;
+    return {
+      ...c,
+      participants: {
+        ...c.participants,
+        data: c.participants?.data?.map((p, i) => i === 0 ? { ...p, name } : p) ?? [{ ...participant, name }],
+      },
+    };
+  }));
+  return enriched;
+}
+
+app.get('/api/user/:userId/name', async (req, res) => {
+  const { userId } = req.params;
+  const { token } = req.query;
+  if (!token || !userId) return res.status(400).json({ error: 'Missing token or userId' });
+  const name = await fetchUserNameFromFacebook(token, userId);
+  if (name) return res.json({ name });
+  res.status(404).json({ error: 'Name not found' });
+});
+
 // ── MAP: senderId → convId (dùng sau khi nhận webhook) ──
 app.get('/api/participant/:senderId/conversation', (req, res) => {
   const { senderId } = req.params;
@@ -695,6 +960,30 @@ app.get('/api/participant/:senderId/conversation', (req, res) => {
   // Không có trong cache → cần fetch conversations trước
   res.status(404).json({ error: 'Not found in cache' });
 });
+
+/** Resolve thread_xxx (webhook) to real Facebook conversation ID for Messages API */
+async function resolveConversationIdForApi(token, convId) {
+  if (!convId || !convId.startsWith('thread_')) return convId;
+  const conv = dbModule.getConversationById(convId);
+  if (!conv) return convId;
+  const { page_id, participant_id } = conv;
+  try {
+    const url = `${FB_API}/${page_id}/conversations`
+      + `?fields=id&user_id=${encodeURIComponent(participant_id)}&platform=messenger&limit=1`
+      + `&access_token=${token}`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const fbId = data.data?.[0]?.id;
+    if (fbId) {
+      console.log(`[RESOLVE] thread_xxx -> ${fbId} for participant ${participant_id}`);
+      return fbId;
+    }
+  } catch (e) {
+    console.error('[RESOLVE]', e.message);
+  }
+  return null;
+}
 
 async function fetchMessagesFromFacebook(token, conversationId, before) {
   try {
@@ -728,13 +1017,24 @@ function saveMessagesToDb(rawMsgs, convId, pageId) {
     };
   });
   dbModule.upsertMessages(msgs);
+  const participantMsg = msgs.find(m => m.is_from_page === 0 && m.sender_name);
+  if (participantMsg) {
+    dbModule.updateParticipantName(convId, participantMsg.sender_name);
+    cache.keys().filter(k => k.startsWith('convs_merged')).forEach(k => cache.del(k));
+  }
+  const latest = msgs[0];
+  if (latest) {
+    const text = latest.text || (latest.has_attachment ? 'Tệp đính kèm' : '');
+    dbModule.updateConversationLastMessage(convId, text, latest.timestamp);
+  }
   return msgs.map(m => mapDbMsgToFbShape(m, pageId));
 }
 
 async function syncMessagesBackground(token, pageId, conversationId) {
   if (!token) return;
   try {
-    const fbData = await fetchMessagesFromFacebook(token, conversationId);
+    const apiConvId = await resolveConversationIdForApi(token, conversationId) || conversationId;
+    const fbData = await fetchMessagesFromFacebook(token, apiConvId);
     if (!fbData) return;
     const raw = fbData.data || [];
     const dbLatestBefore = dbModule.getLatestMessage(conversationId);
@@ -803,6 +1103,23 @@ app.get('/api/messages/:conversationId', async (req, res) => {
       : dbModule.getMessages(conversationId);
     if (beforeNum != null && dbMsgs.length > 0) dbMsgs = dbMsgs.reverse();
     if (dbMsgs.length > 0) {
+      const conv = dbModule.getConversationById(conversationId);
+      const needNameFromFb = conversationId.startsWith('thread_') && token && pageIdParam
+        && conv && (!conv.participant_name || conv.participant_name === 'Unknown');
+      if (needNameFromFb && !beforeNum) {
+        const apiConvId = await resolveConversationIdForApi(token, conversationId);
+        if (apiConvId) {
+          const fbData = await fetchMessagesFromFacebook(token, apiConvId);
+          if (fbData?.data?.length) {
+            const raw = fbData.data || [];
+            const msgs = saveMessagesToDb(raw, conversationId, pageIdParam);
+            const normalized = msgs.map(normalizeMessage);
+            cache.set(memKey, normalized, 60);
+            res.setHeader('X-Cache', 'DB+FB');
+            return res.json(addConvId(addPaging({ data: normalized, source: 'facebook' }, normalized, fbData.paging)));
+          }
+        }
+      }
       const parsed = dbMsgs.map(m => mapDbMsgToFbShape(m, pageIdParam)).map(normalizeMessage);
       if (!beforeNum) {
         cache.set(memKey, parsed, 60);
@@ -816,7 +1133,8 @@ app.get('/api/messages/:conversationId', async (req, res) => {
   // ── LAYER 3: Facebook API ──
   if (!token) return res.status(400).json({ error: 'Missing token' });
   try {
-    const fbData = await fetchMessagesFromFacebook(token, conversationId, before);
+    const apiConvId = await resolveConversationIdForApi(token, conversationId) || conversationId;
+    const fbData = await fetchMessagesFromFacebook(token, apiConvId, before);
     if (!fbData) {
       const dbMsgs = dbModule.getMessages(conversationId);
       if (dbMsgs.length > 0) {
@@ -1011,6 +1329,98 @@ app.get('/api/attachments/:messageId', async (req, res) => {
   } catch (e) {
     console.error('[ATTACHMENT] Error:', e.message);
     res.status(500).json({ error: 'Network error' });
+  }
+});
+
+// ── AVATAR PROXY: Lấy ảnh PSID qua server (tránh App Review chặn profile_pic) ──
+// Stream binary từ Facebook, cache 7 ngày, token giấu ở server
+const PLACEHOLDER_SVG = Buffer.from(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><circle cx="50" cy="50" r="50" fill="#e0e0e0"/><circle cx="50" cy="38" r="18" fill="#9e9e9e"/><ellipse cx="50" cy="95" rx="35" ry="25" fill="#9e9e9e"/></svg>',
+  'utf8'
+);
+
+async function fetchOneAvatar(psid, accessToken) {
+  const cacheKey = `avatar_${psid}`;
+  const cached = cache.get(cacheKey);
+  if (cached) return { psid, dataUrl: `data:${cached.contentType};base64,${cached.buffer.toString('base64')}` };
+  try {
+    const fbUrl = `https://graph.facebook.com/${encodeURIComponent(psid)}/picture?type=large&access_token=${encodeURIComponent(accessToken)}`;
+    const imgRes = await fetch(fbUrl);
+    if (!imgRes.ok) return { psid, dataUrl: null };
+    const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
+    const buffer = Buffer.from(await imgRes.arrayBuffer());
+    cache.set(cacheKey, { buffer, contentType }, 7 * 24 * 60 * 60);
+    return { psid, dataUrl: `data:${contentType};base64,${buffer.toString('base64')}` };
+  } catch (e) {
+    return { psid, dataUrl: null };
+  }
+}
+
+// Batch: 1 request lấy nhiều avatar, tránh gọi N lần bị limit
+app.post('/api/avatars', async (req, res) => {
+  const { psids, token } = req.body || {};
+  if (!Array.isArray(psids) || psids.length === 0 || !token) {
+    return res.status(400).json({ error: 'Missing psids (array) or token' });
+  }
+  const unique = [...new Set(psids)].filter(Boolean).slice(0, 50);
+  if (unique.length === 0) return res.json({});
+
+  const accessToken = token || process.env.PAGE_ACCESS_TOKEN || process.env.FACEBOOK_PAGE_ACCESS_TOKEN;
+  if (!accessToken) return res.status(400).json({ error: 'Missing token' });
+
+  const BATCH_SIZE = 5;
+  const result = {};
+  for (let i = 0; i < unique.length; i += BATCH_SIZE) {
+    const batch = unique.slice(i, i + BATCH_SIZE);
+    const settled = await Promise.allSettled(batch.map((psid) => fetchOneAvatar(psid, accessToken)));
+    settled.forEach((s) => {
+      if (s.status === 'fulfilled' && s.value?.dataUrl) {
+        result[s.value.psid] = s.value.dataUrl;
+      }
+    });
+  }
+  res.json(result);
+});
+
+app.get('/api/avatar', async (req, res) => {
+  const { psid, token } = req.query;
+  if (!psid || typeof psid !== 'string') return res.status(400).send('Missing psid');
+
+  const accessToken = token || process.env.PAGE_ACCESS_TOKEN || process.env.FACEBOOK_PAGE_ACCESS_TOKEN;
+  if (!accessToken) return res.status(400).send('Missing token or PAGE_ACCESS_TOKEN in env');
+
+  const cacheKey = `avatar_${psid}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) {
+    res.setHeader('X-Cache', 'HIT');
+    res.setHeader('Content-Type', cached.contentType);
+    res.setHeader('Cache-Control', 'public, max-age=604800'); // 7 ngày
+    return res.send(cached.buffer);
+  }
+
+  try {
+    const fbUrl = `https://graph.facebook.com/${encodeURIComponent(psid)}/picture?type=large&access_token=${encodeURIComponent(accessToken)}`;
+    const imgRes = await fetch(fbUrl);
+    if (!imgRes.ok) {
+      res.setHeader('Content-Type', 'image/svg+xml');
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      return res.send(PLACEHOLDER_SVG);
+    }
+
+    const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
+    const buffer = Buffer.from(await imgRes.arrayBuffer());
+
+    cacheSet(cacheKey, { buffer, contentType }, 7 * 24 * 60 * 60); // 7 ngày
+
+    res.setHeader('X-Cache', 'MISS');
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=604800'); // 7 ngày
+    res.send(buffer);
+  } catch (e) {
+    console.error('[AVATAR] Error:', e.message);
+    res.setHeader('Content-Type', 'image/svg+xml');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.send(PLACEHOLDER_SVG);
   }
 });
 

@@ -8,23 +8,42 @@
   -webkit-font-smoothing: antialiased;
 }
 
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
 body {
   font-family: var(--font-family);
   font-size: var(--font-size-md);
+  font-weight: var(--font-weight-normal);
   background: #f0f2f5;
   height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+#root {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
   overflow: hidden;
 }
 
 .app-layout {
   display: flex;
-  height: 100vh;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
   overflow: hidden;
 }
 
 .app-sidebar {
   width: var(--sidebar-width);
   min-width: var(--sidebar-width);
+  max-width: min(var(--sidebar-width), 100vw);
   flex-shrink: 0;
   background: #ffffff;
   border-right: 1px solid var(--color-border);
@@ -38,6 +57,7 @@ body {
 .app-chat {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -48,8 +68,7 @@ body {
 /* Responsive — tablet */
 @media (max-width: 1024px) {
   .app-sidebar {
-    width: 280px;
-    min-width: 280px;
+    width: min(320px, 85vw);
   }
 }
 
@@ -65,6 +84,7 @@ body {
     min-width: 0;
     z-index: 50;
     box-shadow: 4px 0 20px rgba(0, 0, 0, 0.15);
+    padding-left: env(safe-area-inset-left);
   }
   .app-layout--mobile-chat .app-sidebar {
     transform: translateX(-100%);
@@ -78,6 +98,8 @@ body {
     right: 0;
     bottom: 0;
     z-index: 40;
+    padding-right: env(safe-area-inset-right);
+    padding-bottom: env(safe-area-inset-bottom);
   }
   .app-layout:not(.app-layout--mobile-chat) .app-chat {
     transform: translateX(100%);
@@ -90,6 +112,9 @@ body {
   .sidebar-topbar {
     padding: 0 8px;
   }
+  .search-wrapper {
+    min-width: 0;
+  }
   .message-input-wrapper {
     padding: 8px 12px 10px !important;
   }
@@ -98,6 +123,15 @@ body {
   }
   .message-textarea {
     font-size: 14px !important;
+  }
+  .chat-scroll-content,
+  .chat-content-column {
+    max-width: 100%;
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  .message-input-inner {
+    max-width: 100%;
   }
 }
 
@@ -109,6 +143,10 @@ body {
   .conversation-item {
     padding: 8px 12px !important;
     height: 64px !important;
+  }
+  .chat-topbar {
+    padding: 0 8px 0 12px;
+    gap: 8px;
   }
   .chat-topbar .name {
     font-size: 15px;
@@ -124,6 +162,35 @@ body {
     width: 40px;
     height: 40px;
   }
+  .chat-scroll-content {
+    padding: 10px 8px;
+  }
+  .chat-content-column {
+    padding: 0 8px 10px;
+  }
+}
+
+/* Responsive — rất nhỏ (iPhone SE, Galaxy Fold) */
+@media (max-width: 360px) {
+  .sidebar-topbar {
+    padding: 0 6px;
+  }
+  .conversation-item {
+    padding: 6px 10px !important;
+    height: 60px !important;
+  }
+  .chat-topbar {
+    padding: 0 6px 0 10px;
+  }
+  .chat-scroll-content {
+    padding: 8px 6px;
+  }
+  .chat-content-column {
+    padding: 0 6px 8px;
+  }
+  .message-input-wrapper {
+    padding: 6px 10px 8px !important;
+  }
 }
 
 .sidebar-topbar {
@@ -134,14 +201,17 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
   flex-shrink: 0;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .search-wrapper {
   position: relative;
   flex: 1;
   min-width: 0;
+  overflow: hidden;
+  z-index: 1;
 }
 
 .search-wrapper .search-icon {
@@ -177,8 +247,10 @@ body {
 .conv-list {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
 }
 
 .conversation-item {
@@ -218,7 +290,9 @@ body {
   gap: 12px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.08);
   box-shadow: 0 1px 0 rgba(0, 0, 0, 0.08);
-  z-index: 10;
+  z-index: 0;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .chat-topbar .avatar { flex-shrink: 0; }
@@ -230,6 +304,7 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
 
 .chat-topbar .status {
@@ -237,37 +312,116 @@ body {
   color: var(--color-text-secondary);
 }
 
-/* Chat area */
-.chat-area {
+/* Background cố định — không xê dịch khi chuyển trạng thái chọn hội thoại */
+.chat-window-root {
+  position: relative;
+  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  height: 100%;
   overflow: hidden;
 }
-
-/* Message list - wallpaper background */
-.message-list {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 8px 12px;
-  scroll-behavior: smooth;
+.chat-bg-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
   background-color: var(--color-bg-chat);
   background-image: url('../assets/wallpaperflare.com_wallpaper.jpg');
   background-repeat: no-repeat;
   background-size: cover;
   background-position: center;
+  pointer-events: none;
 }
 
-.message-list::-webkit-scrollbar { width: 3px; }
-.message-list::-webkit-scrollbar-track { background: transparent; }
-.message-list::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.2); border-radius: 2px; }
+/* Chat area - content trên nền cố định */
+.chat-area {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 100%;
+  overflow: hidden;
+  position: relative;
+  z-index: 1;
+  background: transparent;
+}
+
+/* Scroll ở lề ngoài (full width) - giống Telegram */
+.chat-scroll-outer {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scroll-behavior: smooth;
+}
+.chat-scroll-outer::-webkit-scrollbar { width: 6px; }
+.chat-scroll-outer::-webkit-scrollbar-track { background: transparent; }
+.chat-scroll-outer::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.2); border-radius: 3px; }
+
+/* Nội dung scroll - cột rộng hơn */
+.chat-scroll-content {
+  width: 100%;
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 14px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: min-content;
+  min-width: 0;
+}
+
+/* Cột chat - cho input */
+.chat-content-column {
+  position: relative;
+  width: 100%;
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 0 20px 14px;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.message-list-inner {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.message-bubble-row {
+  min-width: 0;
+}
+@media (max-width: 480px) {
+  .message-bubble-row {
+    padding-left: 8px !important;
+    padding-right: 8px !important;
+  }
+}
+@media (max-width: 360px) {
+  .message-bubble-row {
+    padding-left: 6px !important;
+    padding-right: 6px !important;
+  }
+}
 
 /* Removed messageListIn animation - gây nhấp nháy khi chuyển hội thoại */
 
-[data-theme='dark'] .message-list {
+[data-theme='dark'] .chat-bg-layer {
   background-image: url('../assets/wallpaperflare.com_wallpaper.jpg');
+}
+
+/* Empty state - chưa chọn hội thoại: nền trong suốt, dùng chat-bg-layer */
+.empty-chat-placeholder {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  z-index: 1;
+  background: transparent;
 }
 
 /* Date separator */
@@ -280,31 +434,43 @@ body {
 .date-label {
   background: rgba(0, 0, 0, 0.22);
   color: rgba(255, 255, 255, 0.95);
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 500;
   padding: 4px 12px;
   border-radius: 16px;
   user-select: none;
 }
 
-/* Message input */
+/* Message input - centered like Telegram */
 .message-input-wrapper {
   position: relative;
-  background: #ffffff;
-  border-top: 1px solid rgba(0,0,0,0.08);
+  background: transparent;
+  border-top: 1px solid rgba(0,0,0,0.06);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
   max-height: 50vh;
   overflow: hidden;
-  padding: 8px 12px;
+  padding: 12px 16px;
+  align-items: center;
+}
+
+.message-input-inner {
+  width: 100%;
+  max-width: 820px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .input-toolbar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 2px;
   margin-bottom: 6px;
+  min-width: 0;
 }
 
 .toolbar-btn {
@@ -357,17 +523,18 @@ body {
   border: none;
   outline: none;
   resize: none;
-  font-size: 15px;
+  font-size: 16px;
   line-height: 1.4;
   color: var(--color-text-primary);
   background: transparent;
   font-family: inherit;
-  min-height: 44px;
+  min-height: 28px;
   max-height: 40vh;
   overflow-y: auto;
+  box-sizing: border-box;
 }
 .message-textarea::placeholder { color: var(--color-text-disabled); }
-.message-input-wrapper .message-textarea::placeholder { color: #707579; font-size: 15px; }
+.message-input-wrapper .message-textarea::placeholder { color: #707579; font-size: 16px; line-height: 1.4; }
 
 /* Image preview */
 .image-preview-wrapper { padding: 4px 0; display: flex; gap: 8px; flex-wrap: wrap; }
@@ -380,14 +547,50 @@ body {
   font-size: 11px; display: flex; align-items: center; justify-content: center;
 }
 
+/* Toolbar menu (mobile compact) */
+.toolbar-menu-btn {
+  &:hover:not(:disabled) { background: #f1f3f4; }
+}
+
+/* Menu overflow fix: allow menus to show above clipped containers */
+body.menu-open-input {
+  .chat-window-root,
+  .chat-area,
+  .message-input-wrapper { overflow: visible !important; }
+}
+body.menu-open-sidebar {
+  .app-sidebar,
+  .app-sidebar > div { overflow: visible !important; }
+  .app-sidebar { z-index: 99999 !important; }
+  /* Header chứa menu phải nằm trên danh sách hội thoại */
+  .sidebar-topbar {
+    position: relative !important;
+    z-index: 99999 !important;
+    overflow: visible !important;
+  }
+  .conv-list { position: relative; z-index: 0 !important; }
+}
+
 /* Scroll to bottom */
 .scroll-to-bottom {
-  position: absolute; bottom: 80px; right: 16px;
+  position: absolute;
+  bottom: 80px;
+  right: max(16px, env(safe-area-inset-right));
   padding: 8px 16px;
-  background: #3390ec; color: #fff; border: none; border-radius: 20px;
-  font-size: 13px; cursor: pointer;
+  background: #3390ec;
+  color: #fff;
+  border: none;
+  border-radius: 20px;
+  font-size: 13px;
+  cursor: pointer;
   box-shadow: 0 2px 8px rgba(0,0,0,0.2);
   z-index: 5;
+}
+@media (max-width: 480px) {
+  .scroll-to-bottom {
+    bottom: 70px;
+    right: max(12px, env(safe-area-inset-right));
+  }
 }
 
 /* Quick reply popup */
@@ -411,8 +614,9 @@ body {
   z-index: 100;
   overflow-x: auto;
   overflow-y: auto;
-  padding: 24px 16px;
+  padding: calc(24px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right)) calc(24px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
   box-sizing: border-box;
+  -webkit-overflow-scrolling: touch;
 }
 .login-page-card {
   flex-shrink: 0;

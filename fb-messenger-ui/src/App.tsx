@@ -43,7 +43,7 @@ export default function App() {
 
   return (
     <Show when={authState.step === 'ready'} fallback={<LoginPage />}>
-      <div style={{ display: 'flex', 'flex-direction': 'column', height: '100vh', overflow: 'hidden' }}>
+      <div style={{ display: 'flex', 'flex-direction': 'column', width: '100%', height: '100%', minHeight: 0, overflow: 'hidden' }}>
         <RateLimitBanner />
         <div style={{ flex: 1, 'min-height': 0 }}>
           <Router>
