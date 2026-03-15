@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Database & runtime data (app creates on first run)
+data/
+
+# Uploads (user-uploaded images)
+uploads/
+
+# Build output
+dist/
+fb-messenger-ui/dist
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Backup
+backup-*/
+*.bak

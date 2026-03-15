@@ -1,0 +1,111 @@
+/* Settings overlay */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes menuAppear {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(-6px);
+    transform-origin: top left;
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+    transform-origin: top left;
+  }
+}
+
+@keyframes scaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Settings modal overlay */
+.settings-overlay {
+  animation: fadeIn 200ms ease forwards;
+}
+
+.settings-modal {
+  animation: slideUp 250ms cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+/* Quick reply popup */
+.quick-reply-popup {
+  animation: slideDown 180ms ease forwards;
+  transform-origin: bottom center;
+}
+
+/* Quick reply items stagger */
+.quick-reply-item {
+  animation: slideDown 150ms ease forwards;
+  opacity: 0;
+  animation-fill-mode: forwards;
+}
+
+.quick-reply-item:nth-child(1) {
+  animation-delay: 0ms;
+}
+
+.quick-reply-item:nth-child(2) {
+  animation-delay: 30ms;
+}
+
+.quick-reply-item:nth-child(3) {
+  animation-delay: 60ms;
+}
+
+.quick-reply-item:nth-child(4) {
+  animation-delay: 90ms;
+}
+
+.quick-reply-item:nth-child(5) {
+  animation-delay: 120ms;
+}
+
+/* Form modal */
+.form-modal {
+  animation: scaleIn 200ms cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+/* Settings list items */
+.settings-reply-item {
+  transition: background 150ms ease, transform 150ms ease;
+}
+
+.settings-reply-item:hover {
+  transform: translateX(2px);
+}

@@ -1,0 +1,80 @@
+:root {
+  /* Brand colors (Telegram-like) */
+  --color-primary: #3390ec;
+  --color-primary-hover: #2980d9;
+  --color-primary-light: rgba(51, 144, 236, 0.12);
+
+  /* Backgrounds */
+  --color-bg-primary: #ffffff;
+  --color-bg-secondary: #f1f3f4;
+  --color-bg-elevated: #ffffff;
+  --color-bg-overlay: rgba(0, 0, 0, 0.4);
+  --color-bg-chat: #e8ede6;
+
+  /* Text */
+  --color-text-primary: #000000;
+  --color-text-secondary: #707579;
+  --color-text-disabled: #a2acb4;
+  --color-text-link: #3390ec;
+
+  /* Borders */
+  --color-border: rgba(0, 0, 0, 0.08);
+  --color-border-strong: rgba(0, 0, 0, 0.2);
+
+  /* Chat bubbles */
+  --bubble-bg-outgoing: #effdde;
+  --bubble-bg-incoming: #ffffff;
+  --bubble-text-outgoing: #000000;
+  --bubble-radius: 12px;
+  --bubble-radius-small: 6px;
+
+  /* Status */
+  --color-online: #0ac630;
+  --color-danger: #e53935;
+  --color-success: #0ac630;
+  --color-unread: #3390ec;
+
+  /* Layout */
+  --sidebar-width: 340px;
+  --topbar-height: 56px;
+  --input-area-height: 56px;
+
+  /* Spacing */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+
+  /* Typography */
+  --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, 'Helvetica Neue', Arial, sans-serif;
+  --font-size-xs: 11px;
+  --font-size-sm: 13px;
+  --font-size-md: 14px;
+  --font-size-lg: 17px;
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-bold: 600;
+
+  /* Animations */
+  --transition-fast: 150ms ease;
+  --transition-normal: 250ms ease;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.1);
+  --shadow-md: 0 4px 16px rgba(0,0,0,0.15);
+  --shadow-bubble: 0 1px 2px rgba(0,0,0,0.13);
+}
+
+[data-theme='dark'] {
+  --color-primary: #3390ec;
+  --color-bg-primary: #212121;
+  --color-bg-secondary: #2b2b2b;
+  --color-bg-elevated: #2b2b2b;
+  --color-bg-chat: #0e1621;
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #aaaaaa;
+  --color-border: rgba(255, 255, 255, 0.08);
+  --bubble-bg-outgoing: #2b5278;
+  --bubble-bg-incoming: #182533;
+}
