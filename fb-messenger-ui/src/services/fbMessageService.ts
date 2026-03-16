@@ -289,13 +289,14 @@ export async function sendMessage(
   pageToken: string,
   recipientId: string,
   text: string,
-  pageId?: string
+  pageId?: string,
+  replyToId?: string
 ): Promise<boolean> {
   try {
     const res = await fetch(`${PROXY_BASE}/api/messages/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: pageToken, recipientId, text, pageId }),
+      body: JSON.stringify({ token: pageToken, recipientId, text, pageId, replyToId }),
     });
     const json = (await res.json()) as { error?: { message?: string } };
     if (!res.ok || json.error) {

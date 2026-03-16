@@ -1,11 +1,13 @@
 import { onMount, onCleanup, For, Show, createSignal, createMemo, createEffect } from 'solid-js';
-import { IconSettings, IconLogout, IconWarning, IconSearch, IconRefresh } from '../shared/Icons';
+import { produce } from 'solid-js/store';
+import { IconSettings, IconLogout, IconWarning, IconSearch } from '../shared/Icons';
 import { useNavigate } from '@solidjs/router';
 import { ConversationItem } from './ConversationItem';
 import { convState, setConvState } from '../../stores/conversationStore';
+import { setMsgState } from '../../stores/messageStore';
 import type { ConversationData } from '../../types/conversation';
 import { authState, logout } from '../../stores/authStore';
-import { fetchConversations, fetchMoreConversations, clearAllCache } from '../../services/syncService';
+import { fetchConversations, fetchMoreConversations, clearAllCache, getCachedConversations } from '../../services/syncService';
 import { clearConversationsLightCache } from '../../services/fbConversationService';
 import { ReadTracker } from '../../services/readTracker';
 
@@ -18,7 +20,7 @@ export const Sidebar = () => {
   const [searchQuery, setSearchQuery] = createSignal('');
   const [showMenu, setShowMenu] = createSignal(false);
   const [confirmLogout, setConfirmLogout] = createSignal(false);
-  const [showSettingsSubmenu, setShowSettingsSubmenu] = createSignal(false);
+  const [confirmClearDb, setConfirmClearDb] = createSignal(false);
 
   const filteredConversations = createMemo(() => {
     const q = searchQuery().toLowerCase().trim();
@@ -50,13 +52,36 @@ export const Sidebar = () => {
     logout();
   };
 
+  const handleClearDb = async () => {
+    if (!confirmClearDb()) {
+      setConfirmClearDb(true);
+      return;
+    }
+    setConfirmClearDb(false);
+    setShowMenu(false);
+    try {
+      const res = await fetch('http://localhost:3001/db/clear', { method: 'DELETE' });
+      if (!res.ok) throw new Error('Xóa thất bại');
+      clearConversationsLightCache();
+      setConvState({ conversations: [], selectedId: null, selectedPageId: null });
+      setMsgState({ messages: {}, beforeCursors: {}, refreshTrigger: {}, loading: false, loadingMore: false, lastLoadTime: {} });
+      setConvState('loading', true);
+      await clearAllCache();
+      await fetchConversations();
+    } catch (e) {
+      console.error('[CLEAR DB]', e);
+    } finally {
+      setConvState('loading', false);
+    }
+  };
+
   const handleConvListScroll = () => {
     const el = listEl;
     if (!el || convState.loadingMore) return;
     const { scrollTop, scrollHeight, clientHeight } = el;
-    const threshold = 80;
+    const threshold = 150;
     if (scrollTop + clientHeight < scrollHeight - threshold) return;
-    if (convState.hasMore['merged'] && convState.afterCursors['merged']) {
+    if (convState.hasMore['merged'] === true && convState.afterCursors['merged']) {
       fetchMoreConversations();
     }
   };
@@ -72,8 +97,8 @@ export const Sidebar = () => {
       const menu = document.getElementById('sidebar-menu-root');
       if (menu && !menu.contains(e.target as Node)) {
         setShowMenu(false);
-        setShowSettingsSubmenu(false);
         setConfirmLogout(false);
+        setConfirmClearDb(false);
       }
     };
     document.addEventListener('click', handleClickOutside);
@@ -81,16 +106,20 @@ export const Sidebar = () => {
 
     const pages = authState.selectedPages;
     if (pages.length > 0) {
-      setConvState('loading', true);
+      const cached = getCachedConversations();
+      if (cached?.length) {
+        setConvState(
+          produce((s) => {
+            s.conversations = cached;
+            s.loading = false;
+          })
+        );
+      } else {
+        setConvState('loading', true);
+      }
       setConvState('error', null);
-      const STABILIZATION_MS = 2200;
       fetchConversations()
-        .then(() => {
-          setTimeout(() => {
-            setConvState('loading', false);
-            setConvState('error', null);
-          }, STABILIZATION_MS);
-        })
+        .then(() => setConvState('error', null))
         .catch((err: unknown) => {
           setConvState('loading', false);
           const msg = err instanceof Error ? err.message : String(err);
@@ -136,45 +165,23 @@ export const Sidebar = () => {
             }}>
               <button
                 type="button"
-                onClick={() => setShowSettingsSubmenu((v) => !v)}
+                onClick={() => {
+                  setShowMenu(false);
+                  const first = authState.selectedPages[0];
+                  if (first) navigate(`/settings/${first.id}`);
+                }}
                 style={{
                   display: 'flex', 'align-items': 'center', gap: '12px', width: '100%',
-                  padding: '12px 16px', background: showSettingsSubmenu() ? '#f1f3f4' : 'none',
-                  border: 'none', cursor: 'pointer', 'font-size': '14px', color: '#000000',
-                  'text-align': 'left', transition: 'background 150ms', 'box-sizing': 'border-box',
+                  padding: '12px 16px', background: 'none', border: 'none', cursor: 'pointer',
+                  'font-size': '14px', color: '#000000', 'text-align': 'left',
+                  transition: 'background 150ms', 'box-sizing': 'border-box',
                 }}
                 onMouseEnter={(e) => { e.currentTarget.style.background = '#f1f3f4'; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = showSettingsSubmenu() ? '#f1f3f4' : 'none'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}
               >
                 <span style={{ width: '24px', display: 'flex', 'align-items': 'center', 'justify-content': 'center' }}><IconSettings size={18} /></span>
                 Setting page
-                <span style={{ 'margin-left': 'auto', 'font-size': '12px', transform: showSettingsSubmenu() ? 'rotate(90deg)' : 'none', transition: 'transform 150ms' }}>▶</span>
               </button>
-              <Show when={showSettingsSubmenu() && authState.selectedPages.length > 0}>
-                <div style={{ padding: '0 0 8px 0', 'border-bottom': '1px solid #f0f0f0', 'margin-bottom': '4px' }}>
-                  <For each={authState.selectedPages}>
-                    {(page) => (
-                      <button
-                        type="button"
-                        onClick={() => { setShowMenu(false); setShowSettingsSubmenu(false); navigate(`/settings/${page.id}`); }}
-                        style={{
-                          display: 'flex', 'align-items': 'center', gap: '10px', width: '100%',
-                          padding: '8px 16px 8px 48px', background: 'none', border: 'none', cursor: 'pointer',
-                          'font-size': '14px', color: '#000000', 'text-align': 'left',
-                          transition: 'background 150ms', 'box-sizing': 'border-box',
-                        }}
-                        onMouseEnter={(e) => { e.currentTarget.style.background = '#f1f3f4'; }}
-                        onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}
-                      >
-                        <div style={{ width: '28px', height: '28px', 'border-radius': '50%', background: page.color || '#3390ec', display: 'flex', 'align-items': 'center', 'justify-content': 'center', color: 'white', 'font-size': '11px', 'font-weight': '700', 'flex-shrink': '0' }}>{page.name[0]?.toUpperCase()}</div>
-                        <span style={{ overflow: 'hidden', 'text-overflow': 'ellipsis', 'white-space': 'nowrap' }}>
-                          {page.name}
-                        </span>
-                      </button>
-                    )}
-                  </For>
-                </div>
-              </Show>
               <div style={{ height: '1px', background: '#f0f0f0', margin: '4px 0' }} />
               <button
                 type="button"
@@ -187,7 +194,7 @@ export const Sidebar = () => {
                   try {
                     await fetchConversations();
                   } finally {
-                    setTimeout(() => setConvState('loading', false), 2200);
+                    setConvState('loading', false);
                   }
                 }}
                 style={{
@@ -201,6 +208,21 @@ export const Sidebar = () => {
               >
                 <span style={{ width: '24px', display: 'flex', 'align-items': 'center', 'justify-content': 'center' }}><IconSettings size={18} /></span>
                 Xóa cache và tải lại
+              </button>
+              <button
+                type="button"
+                onClick={handleClearDb}
+                style={{
+                  display: 'flex', 'align-items': 'center', gap: '12px', width: '100%',
+                  padding: '12px 16px', background: confirmClearDb() ? '#fff3f3' : 'none', border: 'none', cursor: 'pointer',
+                  'font-size': '14px', color: '#e53935', 'font-weight': confirmClearDb() ? '600' : '400', 'text-align': 'left',
+                  transition: 'background 150ms', 'box-sizing': 'border-box',
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = confirmClearDb() ? '#ffe8e8' : '#f1f3f4'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = confirmClearDb() ? '#fff3f3' : 'none'; }}
+              >
+                <span style={{ width: '24px', display: 'flex', 'align-items': 'center', 'justify-content': 'center' }}><IconWarning size={18} /></span>
+                {confirmClearDb() ? 'Xác nhận xóa toàn bộ?' : 'Xóa toàn bộ dữ liệu'}
               </button>
               <button type="button" onClick={handleLogout} style={{ display: 'flex', 'align-items': 'center', gap: '12px', width: '100%', padding: '12px 16px', background: confirmLogout() ? '#fff3f3' : 'none', border: 'none', cursor: 'pointer', 'font-size': '14px', color: '#e53935', 'font-weight': confirmLogout() ? '600' : '400', 'text-align': 'left', transition: 'background 150ms', 'box-sizing': 'border-box' }} onMouseEnter={(e) => { e.currentTarget.style.background = confirmLogout() ? '#ffe8e8' : '#f1f3f4'; }} onMouseLeave={(e) => { e.currentTarget.style.background = confirmLogout() ? '#fff3f3' : 'none'; }}>
                 <span style={{ width: '24px', display: 'flex', 'align-items': 'center', 'justify-content': 'center' }}>{confirmLogout() ? <IconWarning size={18} /> : <IconLogout size={18} />}</span>
@@ -220,26 +242,17 @@ export const Sidebar = () => {
         <Show
           when={!convState.loading}
           fallback={
-            <div style={{
-              display: 'flex',
-              'flex-direction': 'column',
-              'align-items': 'center',
-              'justify-content': 'center',
-              padding: '24px 16px',
-              gap: '16px',
-              'min-height': 'min(300px, 50vh)',
-            }}>
-              <div style={{
-                width: '32px',
-                height: '32px',
-                border: '3px solid #e8e8e8',
-                'border-top-color': '#3390ec',
-                'border-radius': '50%',
-                animation: 'spin 0.8s linear infinite',
-              }} />
-              <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-              <span style={{ 'font-size': '14px', color: '#707579' }}>Đang tải danh sách...</span>
-            </div>
+            <For each={Array(8).fill(0)}>
+              {() => (
+                <div style={{ display: 'flex', gap: '12px', padding: '12px 16px', 'align-items': 'center' }}>
+                  <div style={{ width: '44px', height: '44px', 'border-radius': '50%', background: '#e5e7eb', 'flex-shrink': 0 }} />
+                  <div style={{ flex: 1, display: 'flex', 'flex-direction': 'column', gap: '8px' }}>
+                    <div style={{ width: '60%', height: '14px', 'border-radius': '7px', background: '#e5e7eb' }} />
+                    <div style={{ width: '80%', height: '12px', 'border-radius': '6px', background: '#f3f4f6' }} />
+                  </div>
+                </div>
+              )}
+            </For>
           }
         >
         {convState.error ? (
@@ -292,7 +305,7 @@ export const Sidebar = () => {
               )}
             </For>
             <Show when={convState.loadingMore}>
-              <div style={{ padding: '12px', display: 'flex', 'justify-content': 'center' }}>
+              <div style={{ padding: '16px', display: 'flex', 'justify-content': 'center', 'flex-shrink': 0 }}>
                 <div style={{
                   width: '24px', height: '24px',
                   border: '2px solid #e8e8e8', 'border-top-color': '#3390ec',

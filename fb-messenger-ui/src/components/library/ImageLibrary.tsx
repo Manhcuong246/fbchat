@@ -104,16 +104,19 @@ export const ImageLibrary = (props: Props) => {
   };
 
   const content = () => (
-    <div style={{
-      background: 'var(--color-bg-primary)',
-      'border-radius': props.embedded ? '0' : '16px',
-      width: props.embedded ? '100%' : '860px',
-      height: props.embedded ? '100%' : '80vh',
-      display: 'flex',
-      'flex-direction': 'column',
-      overflow: 'hidden',
-      'box-shadow': props.embedded ? 'none' : '0 8px 40px rgba(0,0,0,0.2)',
-    }}>
+    <div
+      class={props.embedded ? 'image-library-embedded' : ''}
+      style={{
+        background: 'var(--color-bg-primary)',
+        'border-radius': props.embedded ? '0' : '16px',
+        width: props.embedded ? '100%' : '860px',
+        height: props.embedded ? '100%' : '80vh',
+        display: 'flex',
+        'flex-direction': 'column',
+        overflow: 'hidden',
+        'box-shadow': props.embedded ? 'none' : '0 8px 40px rgba(0,0,0,0.2)',
+      }}
+    >
       {/* HEADER */}
       <div style={{
         padding: '16px 20px 12px',
@@ -393,7 +396,7 @@ export const ImageLibrary = (props: Props) => {
 
   return (
     <div
-      className="image-library-overlay"
+      class="image-library-overlay"
       style={{
         position: 'fixed', inset: '0',
         background: 'rgba(0,0,0,0.5)',
@@ -406,7 +409,7 @@ export const ImageLibrary = (props: Props) => {
       aria-label="Thư viện ảnh"
     >
       <div
-        className="image-library-modal"
+        class="image-library-modal"
         onClick={(e) => e.stopPropagation()}
       >
         {content()}

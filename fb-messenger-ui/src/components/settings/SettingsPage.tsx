@@ -1,5 +1,6 @@
-import { createSignal, onMount, Show } from 'solid-js';
+import { createSignal, Show, createEffect, For, onMount, onCleanup } from 'solid-js';
 import { IconSettings, IconLightning, IconFolder } from '../shared/Icons';
+import { Avatar } from '../shared/Avatar';
 import { useParams, useNavigate } from '@solidjs/router';
 import { SettingsService, type PageSettings } from '../../services/settingsService';
 import { QuickReplyService, type QuickReply } from '../../services/quickReplyService';
@@ -20,16 +21,29 @@ export default function SettingsPage() {
   const [quickReplies, setQuickReplies] = createSignal<QuickReply[]>([]);
   const [saving, setSaving] = createSignal(false);
   const [saved, setSaved] = createSignal(false);
+  const [showPageDropdown, setShowPageDropdown] = createSignal(false);
 
-  onMount(async () => {
-    const pid = pageId();
-    if (!pid) return;
+  const loadPageData = async (pid: string) => {
     const [s, qr] = await Promise.all([
       SettingsService.get(pid),
       QuickReplyService.getAll(pid),
     ]);
     setSettings(s);
     setQuickReplies(qr);
+  };
+
+  createEffect(() => {
+    const pid = pageId();
+    if (pid) loadPageData(pid);
+  });
+
+  onMount(() => {
+    const closeDropdown = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest('[data-page-dropdown]')) setShowPageDropdown(false);
+    };
+    document.addEventListener('click', closeDropdown);
+    onCleanup(() => document.removeEventListener('click', closeDropdown));
   });
 
   const handleSaveSettings = async () => {
@@ -57,54 +71,81 @@ export default function SettingsPage() {
 
   return (
     <Show when={pageId()} fallback={<div style={{ padding: '20px' }}>Trang không hợp lệ.</div>}>
-    <div style={{ height: '100%', display: 'flex', 'flex-direction': 'column', background: '#f5f5f5' }}>
+    <div class="settings-page">
       {/* HEADER */}
-      <div style={{ height: '56px', 'flex-shrink': '0', background: '#ffffff', 'border-bottom': '1px solid #e0e0e0', display: 'flex', 'align-items': 'center', padding: '0 20px', gap: '12px', 'box-shadow': '0 1px 3px rgba(0,0,0,0.06)' }}>
-        <button
-          onClick={() => navigate('/')}
-          style={{ background: 'none', border: 'none', cursor: 'pointer', 'border-radius': '50%', width: '36px', height: '36px', display: 'flex', 'align-items': 'center', 'justify-content': 'center', color: '#707579' }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = '#f1f3f4')}
-          onMouseLeave={(e) => (e.currentTarget.style.background = 'none')}
-        >
+      <header class="settings-header">
+        <button type="button" class="settings-header-back" onClick={() => navigate('/')} aria-label="Quay lại">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 5l-7 7 7 7" /></svg>
         </button>
-        <div style={{ width: '32px', height: '32px', 'border-radius': '50%', background: page()?.color || '#3390ec', display: 'flex', 'align-items': 'center', 'justify-content': 'center', color: 'white', 'font-weight': '700', 'font-size': '13px', 'flex-shrink': '0' }}>
-          {page()?.name?.[0]?.toUpperCase()}
+        <Avatar name={page()?.name ?? ''} size={32} avatarUrl={page()?.avatarUrl} />
+        <div data-page-dropdown style={{ position: 'relative', flexShrink: 0, minWidth: 0, flex: 1 }}>
+          <button
+            type="button"
+            class="settings-header-title"
+            onClick={() => setShowPageDropdown((v) => !v)}
+          >
+            Cài đặt — {page()?.name}
+            <span style={{ fontSize: '12px', transform: showPageDropdown() ? 'rotate(180deg)' : 'none', transition: 'transform 150ms', flexShrink: 0 }}>▼</span>
+          </button>
+          <Show when={showPageDropdown() && authState.selectedPages.length >= 1}>
+            <div
+              style={{
+                position: 'absolute', top: '100%', left: 0, 'margin-top': '4px',
+                background: '#ffffff', 'border-radius': '10px', 'box-shadow': '0 4px 16px rgba(0,0,0,0.12)',
+                'min-width': '200px', 'z-index': 1000, overflow: 'hidden',
+              }}
+            >
+              <For each={authState.selectedPages}>
+                {(p) => (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowPageDropdown(false);
+                      navigate(`/settings/${p.id}`);
+                    }}
+                    style={{
+                      display: 'flex', 'align-items': 'center', gap: '10px', width: '100%',
+                      padding: '10px 14px', background: p.id === pageId() ? '#e8f4fd' : 'none',
+                      border: 'none', cursor: 'pointer', 'font-size': '14px', color: '#000',
+                      'text-align': 'left', transition: 'background 150ms',
+                    }}
+                    onMouseEnter={(e) => { if (p.id !== pageId()) e.currentTarget.style.background = '#f1f3f4'; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = p.id === pageId() ? '#e8f4fd' : 'none'; }}
+                  >
+                    <Avatar name={p.name} size={24} avatarUrl={p.avatarUrl} />
+                    <span style={{ overflow: 'hidden', 'text-overflow': 'ellipsis', 'white-space': 'nowrap' }}>{p.name}</span>
+                  </button>
+                )}
+              </For>
+            </div>
+          </Show>
         </div>
-        <div style={{ 'font-size': '15px', 'font-weight': '600' }}>Cài đặt — {page()?.name}</div>
-      </div>
+      </header>
 
       {/* BODY */}
-      <div style={{ flex: '1', display: 'flex', 'min-height': '0', 'max-width': '960px', margin: '0 auto', width: '100%', padding: '20px', gap: '20px', 'overflow': 'hidden' }}>
+      <div class="settings-body">
         {/* Sidebar tabs */}
-        <div style={{ width: '190px', 'flex-shrink': '0', display: 'flex', 'flex-direction': 'column', gap: '2px' }}>
+        <nav class="settings-tabs" role="tablist">
           {tabs.map((tab) => (
             <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab() === tab.key}
+              classList={{ 'settings-tab-btn': true, active: activeTab() === tab.key }}
               onClick={() => setActiveTab(tab.key)}
-              style={{
-                display: 'flex', 'align-items': 'center', gap: '10px',
-                padding: '10px 14px', 'border-radius': '10px', border: 'none',
-                cursor: 'pointer', 'text-align': 'left', 'font-size': '14px',
-                'font-family': 'inherit',
-                background: activeTab() === tab.key ? '#3390ec' : 'none',
-                color: activeTab() === tab.key ? 'white' : '#000',
-                'font-weight': activeTab() === tab.key ? '500' : '400',
-                transition: 'background 150ms',
-              }}
-              onMouseEnter={(e) => { if (activeTab() !== tab.key) e.currentTarget.style.background = '#f1f3f4'; }}
-              onMouseLeave={(e) => { if (activeTab() !== tab.key) e.currentTarget.style.background = 'none'; }}
             >
-              <span style={{ display: 'flex', 'align-items': 'center' }}>{tab.icon === 'settings' ? <IconSettings size={18} /> : tab.icon === 'lightning' ? <IconLightning size={18} /> : <IconFolder size={18} />}</span>{tab.label}
+              <span style={{ display: 'flex', alignItems: 'center' }}>{tab.icon === 'settings' ? <IconSettings size={18} /> : tab.icon === 'lightning' ? <IconLightning size={18} /> : <IconFolder size={18} />}</span>
+              {tab.label}
             </button>
           ))}
-        </div>
+        </nav>
 
         {/* Content panel */}
-        <div style={{ flex: '1', background: '#ffffff', 'border-radius': '12px', 'box-shadow': '0 1px 4px rgba(0,0,0,0.08)', overflow: 'hidden', display: 'flex', 'flex-direction': 'column' }}>
+        <div class="settings-content" role="tabpanel">
 
           {/* TAB: GENERAL */}
           <Show when={activeTab() === 'general' && settings()}>
-            <div style={{ padding: '24px', 'overflow-y': 'auto', flex: '1' }}>
+            <div class="settings-general">
               <h2 style={{ 'font-size': '17px', 'font-weight': '600', 'margin-bottom': '24px' }}>Cài đặt tổng quan</h2>
 
               {/* Send mode */}
@@ -160,17 +201,19 @@ export default function SettingsPage() {
 
           {/* TAB: QUICK REPLIES */}
           <Show when={activeTab() === 'quick_replies'}>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
             <QuickRepliesTab
               pageId={pageId()!}
               replies={quickReplies()}
               onUpdate={setQuickReplies}
               onDelete={handleDeleteReply}
             />
+            </div>
           </Show>
 
           {/* TAB: LIBRARY */}
           <Show when={activeTab() === 'library'}>
-            <div style={{ flex: '1', overflow: 'hidden' }}>
+            <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
               <ImageLibrary pageId={pageId()!} mode="manage" onClose={() => {}} onSelect={() => {}} embedded={true} />
             </div>
           </Show>

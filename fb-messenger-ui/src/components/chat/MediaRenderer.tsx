@@ -256,10 +256,10 @@ export const MediaRenderer = (props: {
           class="sticker-container"
           style={{
             padding: '8px',
-            flexShrink: 0,
+            'flex-shrink': 0,
             display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
+            'align-items': 'center',
+            'justify-content': 'center',
           }}
         >
           <img
@@ -269,9 +269,9 @@ export const MediaRenderer = (props: {
             style={{
               width: '180px',
               height: '180px',
-              objectFit: 'contain',
+              'object-fit': 'contain',
               display: 'block',
-              imageRendering: 'crisp-edges',
+              'image-rendering': 'crisp-edges',
             }}
             loading="lazy"
           />

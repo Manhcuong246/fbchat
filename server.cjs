@@ -39,6 +39,42 @@ const getPageDir = (pageId) => {
 const getSettingsPath   = (pageId) => path.join(DATA_DIR, `settings_${pageId}.json`);
 const getQuickRepliesPath = (pageId) => path.join(DATA_DIR, `quick_replies_${pageId}.json`);
 const getLibraryMetaPath  = (pageId) => path.join(getPageDir(pageId), 'meta.json');
+const getPageTokensPath = () => path.join(DATA_DIR, 'page_tokens.json');
+
+function savePageToken(pageId, accessToken) {
+  const tokens = readJSON(getPageTokensPath(), {});
+  tokens[pageId] = { accessToken, savedAt: Date.now() };
+  writeJSON(getPageTokensPath(), tokens);
+  cacheSet(`page_token_${pageId}`, accessToken, 60 * 60);
+}
+
+async function validateAndSavePageToken(pageId, accessToken) {
+  try {
+    const testUrl = `${FB_API}/me?fields=id,name&access_token=${accessToken}`;
+    const r = await fetch(testUrl);
+    const data = await r.json();
+    if (data.error) {
+      console.error(`[TOKEN] Invalid token for page ${pageId}:`, data.error.message);
+      return false;
+    }
+    savePageToken(pageId, accessToken);
+    console.log(`[TOKEN] Valid token saved for page ${pageId} (${data.name})`);
+    return true;
+  } catch (e) {
+    console.error('[TOKEN] Validation failed:', e.message);
+    return false;
+  }
+}
+
+function loadPageTokens() {
+  const tokens = readJSON(getPageTokensPath(), {});
+  Object.entries(tokens).forEach(([pageId, data]) => {
+    if (data.accessToken) {
+      cacheSet(`page_token_${pageId}`, data.accessToken, 60 * 60);
+      console.log(`[TOKEN] Restored token for page ${pageId}`);
+    }
+  });
+}
 
 // ── IMAGE LIBRARY — disk storage (fixed) ──
 const diskStorage = multer.diskStorage({
@@ -68,7 +104,7 @@ const diskUpload = multer({
 app.use('/uploads', express.static(UPLOAD_DIR, { maxAge: '7d', etag: true }));
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 const PORT = 3001;
 const FB_API = 'https://graph.facebook.com/v19.0';
@@ -153,6 +189,9 @@ function mapDbMsgToFbShape(row, pageId) {
     sender_id: row.sender_id,
     sender_name: row.sender_name,
     attachments: row.attachments ? { data: JSON.parse(row.attachments) } : { data: [] },
+    reply_to_id: row.reply_to_id || null,
+    reply_to_text: row.reply_to_text || null,
+    reply_to_is_from_page: row.reply_to_is_from_page ?? null,
   };
 }
 
@@ -197,6 +236,18 @@ app.delete('/cache/flush', (req, res) => {
   res.json({ ok: true, message: 'Cache cleared' });
 });
 
+app.delete('/db/clear', (req, res) => {
+  try {
+    dbModule.clearAllData();
+    cache.flushAll();
+    console.log('[DB] Cleared all data');
+    res.json({ ok: true, message: 'Database cleared' });
+  } catch (e) {
+    console.error('[DB] Clear error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/db/stats', (req, res) => {
   const stats = {
     conversations: dbModule.db.prepare('SELECT COUNT(*) as count FROM conversations').get(),
@@ -205,6 +256,43 @@ app.get('/db/stats', (req, res) => {
     cacheKeys: cache.keys().length,
   };
   res.json(stats);
+});
+
+// ── DEBUG: Enrich flow diagnostic ──
+app.get('/debug/enrich/:pageId', async (req, res) => {
+  const { pageId } = req.params;
+  const tokenFromCache = cache.get(`page_token_${pageId}`);
+  const tokenFromDisk = readJSON(getPageTokensPath(), {})[pageId]?.accessToken;
+  const token = tokenFromCache || tokenFromDisk;
+
+  const convs = dbModule.getConversations(pageId);
+  const unknowns = convs.filter((c) => !c.participant_name || c.participant_name === 'Unknown');
+
+  let testResult = null;
+  if (unknowns[0] && token) {
+    try {
+      const url =
+        `${FB_API}/${pageId}/conversations` +
+        `?fields=id,participants{id,name}` +
+        `&user_id=${encodeURIComponent(unknowns[0].participant_id)}&platform=messenger&limit=1` +
+        `&access_token=${token}`;
+      const r = await fetch(url);
+      testResult = await r.json();
+    } catch (e) {
+      testResult = { error: e.message };
+    }
+  }
+
+  res.json({
+    pageId,
+    tokenInCache: !!tokenFromCache,
+    tokenOnDisk: !!tokenFromDisk,
+    token_preview: token ? token.substring(0, 20) + '...' : null,
+    totalConvs: convs.length,
+    unknownConvs: unknowns.length,
+    firstUnknown: unknowns[0] || null,
+    facebookApiTest: testResult,
+  });
 });
 
 // ============================================================
@@ -265,6 +353,163 @@ app.get('/webhook', (req, res) => {
   }
 });
 
+// Thay thế toàn bộ logic xử lý incoming message
+function handleIncomingMessage(pageId, senderId, event, timestamp) {
+  let conv = dbModule.getConversationByParticipant(pageId, senderId);
+
+  if (!conv) {
+    const threadId = `thread_${pageId}_${senderId}`;
+    dbModule.upsertConversation({
+      id: threadId,
+      page_id: pageId,
+      participant_id: senderId,
+      participant_name: 'Unknown',
+      participant_picture_url: null,
+      last_message: event.message.text || (event.message.attachments?.length ? 'Tệp đính kèm' : ''),
+      last_message_time: timestamp * 1000,
+      unread_count: 1,
+      updated_at: Date.now(),
+      raw_data: null,
+    });
+    conv = dbModule.getConversationByParticipant(pageId, senderId);
+  }
+
+  const convId = conv?.id ?? `thread_${pageId}_${senderId}`;
+
+  dbModule.upsertMessage({
+    id: event.message.mid,
+    conversation_id: convId,
+    page_id: pageId,
+    text: event.message.text || null,
+    timestamp: timestamp * 1000,
+    is_from_page: 0,
+    sender_name: '',
+    sender_id: senderId,
+    has_attachment: (event.message.attachments?.length || 0) > 0 ? 1 : 0,
+    attachments: JSON.stringify(event.message.attachments || []),
+    status: 'received',
+  });
+
+  if (conv) {
+    dbModule.incrementUnread(conv.id);
+    dbModule.upsertConversation({
+      ...conv,
+      last_message: event.message.text || 'Tệp đính kèm',
+      last_message_time: timestamp * 1000,
+      updated_at: Date.now(),
+    });
+  }
+
+  cache.del(`convs:${pageId}`);
+  cache.del(`msgs:${convId}`);
+  cacheDelPrefix('convs_merged:');
+
+  broadcastToPage(pageId, 'new_message', {
+    pageId,
+    senderId,
+    convId,
+    messageId: event.message.mid,
+    text: event.message.text || null,
+    timestamp,
+    attachments: event.message.attachments || [],
+  });
+
+  resolveAndEnrichConversation(pageId, senderId, convId).catch(console.error);
+}
+
+// Resolve thread_xxx → real FB ID, enrich participant name
+async function resolveAndEnrichConversation(pageId, participantId, currentConvId) {
+  const tokenFromCache = cache.get(`page_token_${pageId}`);
+  const tokenFromDisk = readJSON(getPageTokensPath(), {})[pageId]?.accessToken;
+  const token = tokenFromCache || tokenFromDisk;
+
+  if (!token) {
+    console.error(`[ENRICH] No token for page ${pageId} — cannot enrich ${currentConvId}`);
+    return;
+  }
+
+  console.log(`[ENRICH] Resolving conv=${currentConvId} participant=${participantId} page=${pageId}`);
+
+  try {
+    const url =
+      `${FB_API}/${pageId}/conversations` +
+      `?fields=id,participants{id,name,picture.type(large)}` +
+      `&user_id=${encodeURIComponent(participantId)}&platform=messenger&limit=1` +
+      `&access_token=${token}`;
+
+    console.log(`[ENRICH] Calling FB API...`);
+    const res = await fetch(url);
+    const data = await res.json();
+
+    if (data.error) {
+      console.error(`[ENRICH] FB API error:`, data.error.message);
+      return;
+    }
+
+    console.log(`[ENRICH] FB API response:`, JSON.stringify(data).substring(0, 200));
+
+    const fbConv = data.data?.[0];
+    if (!fbConv) {
+      console.warn(`[ENRICH] No conversation found for participant ${participantId}`);
+      return;
+    }
+
+    const realId = fbConv.id;
+    const participant = fbConv.participants?.data?.find((p) => p.id !== pageId);
+    const realName = participant?.name || null;
+    const realPicture = participant?.picture?.data?.url || null;
+
+    console.log(`[ENRICH] Found: convId=${realId} name=${realName} picture=${!!realPicture}`);
+
+    if (realId && realId !== currentConvId && currentConvId.startsWith('thread_')) {
+      const oldConv = dbModule.getConversationById(currentConvId);
+      if (oldConv) {
+        dbModule.upsertConversation({
+          ...oldConv,
+          id: realId,
+          participant_name: realName || oldConv.participant_name,
+          participant_picture_url: realPicture || oldConv.participant_picture_url,
+        });
+        dbModule.db.prepare(`UPDATE messages SET conversation_id=? WHERE conversation_id=?`).run(realId, currentConvId);
+        dbModule.db.prepare(`DELETE FROM conversations WHERE id=?`).run(currentConvId);
+
+        cache.del(`msgs:${currentConvId}`);
+        cache.del(`msgs:${realId}`);
+        cache.del(`convs:${pageId}`);
+        cacheDelPrefix('convs_merged:');
+
+        console.log(`[ENRICH] Merged ${currentConvId} -> ${realId} name=${realName}`);
+
+        broadcastToPage(pageId, 'conv_id_resolved', {
+          pageId,
+          oldConvId: currentConvId,
+          newConvId: realId,
+          participantName: realName,
+          participantPicture: realPicture,
+        });
+      }
+    } else if (realName && realName !== 'Unknown') {
+      dbModule.updateParticipantName(currentConvId, realName);
+      if (realPicture) {
+        dbModule.db.prepare(`UPDATE conversations SET participant_picture_url=? WHERE id=?`).run(realPicture, currentConvId);
+      }
+      cache.del(`convs:${pageId}`);
+      cacheDelPrefix('convs_merged:');
+
+      console.log(`[ENRICH] Updated name=${realName} for conv=${currentConvId}`);
+
+      broadcastToPage(pageId, 'participant_updated', {
+        pageId,
+        convId: currentConvId,
+        participantName: realName,
+        participantPicture: realPicture,
+      });
+    }
+  } catch (e) {
+    console.error('[ENRICH] Exception:', e.message);
+  }
+}
+
 app.post('/webhook', (req, res) => {
   res.sendStatus(200);
 
@@ -280,63 +525,7 @@ app.post('/webhook', (req, res) => {
       const timestamp = event.timestamp;
 
       if (event.message && !event.message.is_echo) {
-        const pageIdEntry = recipientId;
-        let conv = dbModule.getConversationByParticipant(pageIdEntry, senderId);
-        if (!conv) {
-          const threadId = `thread_${pageIdEntry}_${senderId}`;
-          dbModule.upsertConversation({
-            id: threadId,
-            page_id: pageIdEntry,
-            participant_id: senderId,
-            participant_name: 'Unknown',
-            participant_picture_url: null,
-            last_message: event.message.text || ((event.message.attachments?.length || 0) > 0 ? 'Tệp đính kèm' : ''),
-            last_message_time: timestamp * 1000,
-            unread_count: 1,
-            updated_at: Date.now(),
-            raw_data: null,
-          });
-          conv = dbModule.getConversationByParticipant(pageIdEntry, senderId);
-        }
-        const convId = conv ? conv.id : `thread_${pageIdEntry}_${senderId}`;
-
-        dbModule.upsertMessage({
-          id: event.message.mid,
-          conversation_id: convId,
-          page_id: pageIdEntry,
-          text: event.message.text || null,
-          timestamp: timestamp * 1000,
-          is_from_page: 0,
-          sender_name: '',
-          sender_id: senderId,
-          has_attachment: (event.message.attachments?.length || 0) > 0 ? 1 : 0,
-          attachments: JSON.stringify(event.message.attachments || []),
-          status: 'received',
-        });
-
-        if (conv) {
-          dbModule.incrementUnread(conv.id);
-          dbModule.upsertConversation({
-            ...conv,
-            last_message: event.message.text || 'Tệp đính kèm',
-            last_message_time: timestamp * 1000,
-            updated_at: Date.now(),
-          });
-        }
-
-        cache.del(`convs:${pageIdEntry}`);
-        cache.del(`msgs:${convId}`);
-
-        console.log(`[WEBHOOK] new_message page=${pageIdEntry} sender=${senderId} conv=${convId}`);
-        broadcastToPage(pageIdEntry, 'new_message', {
-          pageId: pageIdEntry,
-          senderId,
-          convId,
-          messageId: event.message.mid,
-          text: event.message.text || null,
-          timestamp,
-          attachments: event.message.attachments || [],
-        });
+        handleIncomingMessage(recipientId, senderId, event, timestamp);
       }
 
       if (event.message?.is_echo) {
@@ -375,6 +564,7 @@ app.post('/webhook', (req, res) => {
         });
 
         cache.del(`convs:${pageIdEcho}`);
+        cacheDelPrefix('convs_merged:');
         cache.del(`msgs:${convId}`);
 
         console.log(`[WEBHOOK] echo page=${pageIdEcho} to=${recipientId} conv=${convId}`);
@@ -469,10 +659,49 @@ app.get('/api/auth/pages', async (req, res) => {
 
     const result = { pages, total: pages.length };
     cacheSet(cacheKey, result, TTL.PAGE_INFO);
+    await Promise.all(
+      pages.filter((p) => p.accessToken).map((p) => validateAndSavePageToken(p.id, p.accessToken))
+    );
     res.json(result);
   } catch (e) {
     console.error('[AUTH PAGES] Network error:', e.message);
     res.status(500).json({ error: 'Network error' });
+  }
+});
+
+// ── ENRICH PARTICIPANTS (re-trigger enrich for Unknown) ──
+app.post('/api/enrich-participants', async (req, res) => {
+  const { convIds, pageId } = req.body || {};
+  if (!pageId) {
+    return res.status(400).json({ error: 'Missing pageId' });
+  }
+
+  let token = cache.get(`page_token_${pageId}`);
+  if (!token) {
+    const tokens = readJSON(getPageTokensPath(), {});
+    token = tokens[pageId]?.accessToken;
+  }
+  if (!token) {
+    return res.status(400).json({ error: 'No token for this page' });
+  }
+
+  const convs =
+    convIds === 'ALL'
+      ? dbModule.getConversations(pageId).filter(
+          (c) => !c.participant_name || c.participant_name === 'Unknown'
+        )
+      : (Array.isArray(convIds) ? convIds : []).map((id) => dbModule.getConversationById(id)).filter(Boolean);
+
+  res.json({ ok: true, message: 'Enriching in background', queued: convs.length });
+
+  console.log(`[ENRICH API] Processing ${convs.length} conversations`);
+
+  for (let i = 0; i < convs.length; i++) {
+    const conv = convs[i];
+    await new Promise((r) => setTimeout(r, 400 * i));
+    resolveAndEnrichConversation(pageId, conv.participant_id, conv.id).catch((e) =>
+      console.error('[ENRICH API]', e.message)
+    );
   }
 });
 
@@ -494,6 +723,10 @@ app.post('/api/subscribe-page', async (req, res) => {
     if (!fbRes.ok) {
       console.error('[SUBSCRIBE] Error:', data.error?.message);
       return res.status(fbRes.status).json({ error: data.error?.message || 'Subscribe failed' });
+    }
+    const saved = await validateAndSavePageToken(pageId, pageAccessToken);
+    if (!saved) {
+      console.warn('[SUBSCRIBE] Page token validation failed, token not persisted');
     }
     console.log(`[SUBSCRIBE] Page ${pageId} subscribed to webhook`);
     res.json({ success: true, data });
@@ -572,14 +805,31 @@ function transformAndSaveConversations(fbData, pageId) {
   return convs;
 }
 
+function hasConversationsChanged(oldList, newList) {
+  if (oldList.length !== newList.length) return true;
+  const oldMap = new Map(oldList.map(c => [c.id, c.updated_time]));
+  for (const conv of newList) {
+    if (oldMap.get(conv.id) !== conv.updated_time) return true;
+  }
+  return false;
+}
+
 async function syncConversationsBackground(token, pageId) {
   if (!token) return;
   const fbData = await fetchConversationsFromFacebook(token, pageId, 50);
   if (!fbData) return;
+
   const transformed = transformAndSaveConversations(fbData, pageId);
   const mapped = transformed.map(mapDbConvToFbShape);
+
+  const existing = cache.get(`convs:${pageId}`);
+  const hasChanged = !existing || hasConversationsChanged(existing, mapped);
+
   cache.set(`convs:${pageId}`, mapped, 30);
-  broadcastToPage(pageId, 'conversations_synced', { pageId });
+
+  if (hasChanged) {
+    broadcastToPage(pageId, 'conversations_synced', { pageId });
+  }
 }
 
 // ── CONVERSATIONS: Layer 1 memory → Layer 2 SQLite → Layer 3 Facebook ──
@@ -961,18 +1211,22 @@ app.get('/api/participant/:senderId/conversation', (req, res) => {
   res.status(404).json({ error: 'Not found in cache' });
 });
 
-/** Resolve thread_xxx (webhook) to real Facebook conversation ID for Messages API */
+/** Resolve thread_xxx (webhook) to real Facebook conversation ID for Messages API. Never returns null. */
 async function resolveConversationIdForApi(token, convId) {
   if (!convId || !convId.startsWith('thread_')) return convId;
+
   const conv = dbModule.getConversationById(convId);
   if (!conv) return convId;
+
   const { page_id, participant_id } = conv;
+  if (!participant_id) return convId;
+
   try {
     const url = `${FB_API}/${page_id}/conversations`
       + `?fields=id&user_id=${encodeURIComponent(participant_id)}&platform=messenger&limit=1`
       + `&access_token=${token}`;
     const res = await fetch(url);
-    if (!res.ok) return null;
+    if (!res.ok) return convId;
     const data = await res.json();
     const fbId = data.data?.[0]?.id;
     if (fbId) {
@@ -982,7 +1236,7 @@ async function resolveConversationIdForApi(token, convId) {
   } catch (e) {
     console.error('[RESOLVE]', e.message);
   }
-  return null;
+  return convId;
 }
 
 async function fetchMessagesFromFacebook(token, conversationId, before) {
@@ -1000,8 +1254,13 @@ async function fetchMessagesFromFacebook(token, conversationId, before) {
 }
 
 function saveMessagesToDb(rawMsgs, convId, pageId) {
+  const existingById = new Map();
+  const existingRows = dbModule.getMessages(convId);
+  existingRows.forEach(r => { existingById.set(r.id, r); });
+
   const msgs = (rawMsgs || []).map(msg => {
     const isFromPage = msg.from?.id === pageId ? 1 : 0;
+    const existing = existingById.get(msg.id);
     return {
       id: msg.id,
       conversation_id: convId,
@@ -1014,6 +1273,9 @@ function saveMessagesToDb(rawMsgs, convId, pageId) {
       has_attachment: (msg.attachments?.data?.length || 0) > 0 ? 1 : 0,
       attachments: JSON.stringify(msg.attachments?.data || []),
       status: 'received',
+      reply_to_id: existing?.reply_to_id ?? null,
+      reply_to_text: existing?.reply_to_text ?? null,
+      reply_to_is_from_page: existing?.reply_to_is_from_page ?? null,
     };
   });
   dbModule.upsertMessages(msgs);
@@ -1036,18 +1298,26 @@ async function syncMessagesBackground(token, pageId, conversationId) {
     const apiConvId = await resolveConversationIdForApi(token, conversationId) || conversationId;
     const fbData = await fetchMessagesFromFacebook(token, apiConvId);
     if (!fbData) return;
+
     const raw = fbData.data || [];
     const dbLatestBefore = dbModule.getLatestMessage(conversationId);
     const fbLatest = raw[0];
+
     saveMessagesToDb(raw, conversationId, pageId);
+
+    const isNewMessage = fbLatest && (!dbLatestBefore || fbLatest.id !== dbLatestBefore.id);
+    if (!isNewMessage) return;
+
     const mapped = dbModule.getMessages(conversationId).map(m => mapDbMsgToFbShape(m, pageId));
-    const normalize = (m) => (m.is_from_page !== undefined ? { ...m, from: { id: m.is_from_page ? pageId : (m.from?.id ?? m.sender_id ?? ''), name: m.from?.name ?? m.sender_name ?? '' } } : m);
-    const parsed = mapped.map(normalize);
+    const parsed = mapped.map(m => ({
+      ...m,
+      from: {
+        id: m.is_from_page ? pageId : (m.from?.id ?? m.sender_id ?? ''),
+        name: m.from?.name ?? m.sender_name ?? '',
+      },
+    }));
     cache.set(`msgs:${conversationId}`, parsed, 60);
-    if (fbLatest && dbLatestBefore && fbLatest.id !== dbLatestBefore.id) {
-      console.log(`[SYNC BG] New messages for ${conversationId}`);
-      broadcastToPage(pageId, 'messages_updated', { convId: conversationId });
-    }
+    broadcastToPage(pageId, 'messages_updated', { convId: conversationId });
   } catch (e) {
     console.error('[SYNC BG]', e.message);
   }
@@ -1172,84 +1442,153 @@ app.get('/debug/messages/:convId', (req, res) => {
   );
 });
 
-// ── SEND MESSAGE ──
-app.post('/api/messages/send', async (req, res) => {
-  const { token, recipientId, text, pageId } = req.body;
+// ── SEND MESSAGE (auto-split for FB 2000 char limit) ──
+function splitMessage(text, maxLen = 1900) {
+  if (text.length <= maxLen) return [text];
 
-  console.log('[SEND] pageId:', pageId);
-  console.log('[SEND] recipientId:', recipientId);
-  console.log('[SEND] Socket rooms page:' + pageId + ' →', io.sockets.adapter.rooms.get(`page:${pageId}`)?.size ?? 0, 'clients');
+  const chunks = [];
+  let remaining = text;
+
+  while (remaining.length > maxLen) {
+    let splitAt = maxLen;
+
+    const lastNewline = remaining.lastIndexOf('\n', maxLen);
+    if (lastNewline > maxLen * 0.6) {
+      splitAt = lastNewline + 1;
+    } else {
+      const lastSentence = Math.max(
+        remaining.lastIndexOf('. ', maxLen),
+        remaining.lastIndexOf('! ', maxLen),
+        remaining.lastIndexOf('? ', maxLen),
+        remaining.lastIndexOf('.\n', maxLen),
+      );
+      if (lastSentence > maxLen * 0.6) {
+        splitAt = lastSentence + 1;
+      } else {
+        const lastSpace = remaining.lastIndexOf(' ', maxLen);
+        if (lastSpace > maxLen * 0.5) splitAt = lastSpace + 1;
+      }
+    }
+
+    chunks.push(remaining.slice(0, splitAt).trim());
+    remaining = remaining.slice(splitAt).trim();
+  }
+
+  if (remaining.length > 0) chunks.push(remaining);
+  return chunks;
+}
+
+async function sendTextChunks(token, recipientId, text) {
+  const chunks = splitMessage(text);
+  const results = [];
+
+  for (let i = 0; i < chunks.length; i++) {
+    if (i > 0) await new Promise(r => setTimeout(r, 300));
+
+    const fbRes = await fetch(`${FB_API}/me/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        recipient: { id: recipientId },
+        message: { text: chunks[i] },
+        access_token: token,
+      }),
+    });
+
+    const data = await fbRes.json();
+    if (!fbRes.ok) throw { status: fbRes.status, data, chunkIndex: i };
+    results.push(data);
+  }
+
+  return results;
+}
+
+app.post('/api/messages/send', async (req, res) => {
+  const { token, recipientId, text, pageId, replyToId } = req.body;
 
   if (!token || !recipientId || !text) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
 
   try {
-    const fbRes = await fetch(`${FB_API}/me/messages`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        recipient: { id: recipientId },
-        message: { text },
-        access_token: token,
-      }),
-    });
+    const chunks = splitMessage(text);
+    if (chunks.length > 1) console.log(`[SEND] Splitting ${text.length} chars into ${chunks.length} chunks`);
+    const results = await sendTextChunks(token, recipientId, text);
+    const now = Date.now();
 
-    const data = await fbRes.json();
+    if (pageId) {
+      const dbConvs = dbModule.getConversations(pageId);
+      let conv = dbConvs.find(c => c.participant_id === recipientId);
 
-    if (fbRes.ok) {
-      const messageId = data.message_id ?? data.mid ?? `mid_${Date.now()}`;
-      const now = Date.now();
-      let conv = null;
-      if (pageId) {
-        const dbConvs = dbModule.getConversations(pageId);
-        conv = dbConvs.find(c => c.participant_id === recipientId);
-        if (conv) {
+      if (!conv) conv = dbModule.getConversationById(`thread_${pageId}_${recipientId}`);
+      if (!conv) {
+        try {
+          const resolved = await resolveConversationIdForApi(token, `thread_${pageId}_${recipientId}`);
+          if (resolved && !resolved.startsWith('thread_')) {
+            conv = dbModule.getConversationById(resolved);
+          }
+        } catch {}
+      }
+
+      if (conv) {
+        const replyToMsg = replyToId ? dbModule.getMessageById(replyToId) : null;
+        const replyToText = replyToMsg?.text ? replyToMsg.text.slice(0, 100) : null;
+        const replyToIsFromPage = replyToMsg ? (replyToMsg.is_from_page === 1 ? 1 : 0) : null;
+
+        results.forEach((result, i) => {
           dbModule.upsertMessage({
-            id: messageId,
+            id: result.message_id ?? result.mid ?? `mid_${now}_${i}`,
             conversation_id: conv.id,
             page_id: pageId,
-            text,
-            timestamp: now,
+            text: chunks[i],
+            timestamp: now + i * 300,
             is_from_page: 1,
             sender_name: '',
             sender_id: pageId,
             has_attachment: 0,
             attachments: '[]',
             status: 'sent',
+            reply_to_id: i === 0 ? (replyToId || null) : null,
+            reply_to_text: i === 0 ? replyToText : null,
+            reply_to_is_from_page: i === 0 ? replyToIsFromPage : null,
           });
-          dbModule.upsertConversation({
-            ...conv,
-            last_message: text,
-            last_message_time: now,
-            updated_at: now,
-          });
-        }
-        cache.del(`convs:${pageId}`);
-        if (conv) cache.del(`msgs:${conv.id}`);
-      }
-      cacheDelPrefix('msgs:');
+        });
 
-      if (pageId) {
+        dbModule.upsertConversation({
+          ...conv,
+          last_message: chunks.at(-1),
+          last_message_time: now,
+          updated_at: now,
+        });
+
+        cache.del(`msgs:${conv.id}`);
+      }
+
+      cache.del(`convs:${pageId}`);
+      cacheDelPrefix('convs_merged:');
+
+      results.forEach((result, i) => {
         broadcastToPage(pageId, 'message_echo', {
           type: 'message_echo',
           pageId,
           senderId: pageId,
           recipientId,
-          messageId,
-          text,
-          timestamp: Math.floor(now / 1000),
+          convId: conv?.id || `thread_${pageId}_${recipientId}`,
+          messageId: result.message_id ?? result.mid ?? `mid_${now}_${i}`,
+          text: chunks[i],
+          timestamp: Math.floor((now + i * 300) / 1000),
           attachments: [],
           source: 'api_send',
         });
-        console.log('[SEND] Broadcasted echo to page:', pageId);
-      }
-
-      return res.json(data);
+      });
     }
 
-    res.status(fbRes.status).json(data);
+    return res.json(results[0]);
   } catch (e) {
+    if (e.chunkIndex !== undefined) {
+      console.error(`[SEND] Failed at chunk ${e.chunkIndex}:`, e.data);
+      return res.status(e.status).json(e.data);
+    }
     console.error('[SEND] Error:', e.message);
     res.status(500).json({ error: 'Network error' });
   }
@@ -1597,24 +1936,30 @@ app.get('/api/quick-replies/:pageId', (req, res) => {
 });
 
 app.post('/api/quick-replies/:pageId', (req, res) => {
-  const { pageId } = req.params;
-  const reply = req.body;
-  if (!reply.shortcut) return res.status(400).json({ error: 'Missing shortcut' });
+  try {
+    const { pageId } = req.params;
+    const reply = req.body;
+    if (!reply || typeof reply !== 'object') return res.status(400).json({ error: 'Invalid body' });
+    if (!reply.shortcut) return res.status(400).json({ error: 'Missing shortcut' });
 
-  const data = readJSON(getQuickRepliesPath(pageId), { replies: [] });
-  const idx = data.replies.findIndex(r => r.id === reply.id);
-  if (idx >= 0) {
-    data.replies[idx] = { ...data.replies[idx], ...reply, updatedAt: Date.now() };
-  } else {
-    data.replies.unshift({
-      ...reply,
-      id: reply.id || `qr_${Date.now()}_${Math.random().toString(36).slice(2)}`,
-      createdAt: Date.now(),
-    });
+    const data = readJSON(getQuickRepliesPath(pageId), { replies: [] });
+    const idx = data.replies.findIndex(r => r.id === reply.id);
+    if (idx >= 0) {
+      data.replies[idx] = { ...data.replies[idx], ...reply, updatedAt: Date.now() };
+    } else {
+      data.replies.unshift({
+        ...reply,
+        id: reply.id || `qr_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+        createdAt: Date.now(),
+      });
+    }
+    writeJSON(getQuickRepliesPath(pageId), data);
+    cacheDel(`qr_${pageId}`);
+    res.json(data);
+  } catch (e) {
+    console.error('[quick-replies POST]', e);
+    res.status(500).json({ error: e.message || 'Server error' });
   }
-  writeJSON(getQuickRepliesPath(pageId), data);
-  cacheDel(`qr_${pageId}`);
-  res.json(data);
 });
 
 app.delete('/api/quick-replies/:pageId/:replyId', (req, res) => {
@@ -1624,6 +1969,55 @@ app.delete('/api/quick-replies/:pageId/:replyId', (req, res) => {
   writeJSON(getQuickRepliesPath(pageId), data);
   cacheDel(`qr_${pageId}`);
   res.json({ ok: true });
+});
+
+// Export quick replies (JSON for copy/paste between pages)
+app.get('/api/quick-replies/:pageId/export', (req, res) => {
+  const data = readJSON(getQuickRepliesPath(req.params.pageId), { replies: [] });
+  res.json({
+    source_page_id: req.params.pageId,
+    exported_at: Date.now(),
+    replies: data.replies,
+  });
+});
+
+// Import quick replies (merge or replace)
+app.post('/api/quick-replies/:pageId/import', (req, res) => {
+  const { pageId } = req.params;
+  const { replies, mode } = req.body;
+
+  if (!Array.isArray(replies)) {
+    return res.status(400).json({ error: 'replies must be array' });
+  }
+
+  const current = readJSON(getQuickRepliesPath(pageId), { replies: [] });
+
+  let result;
+  if (mode === 'replace') {
+    result = replies.map((r) => ({
+      ...r,
+      id: `qr_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      createdAt: Date.now(),
+    }));
+  } else {
+    const existingShortcuts = new Set(current.replies.map((r) => r.shortcut));
+    const incoming = replies
+      .filter((r) => !existingShortcuts.has(r.shortcut))
+      .map((r) => ({
+        ...r,
+        id: `qr_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+        createdAt: Date.now(),
+      }));
+    result = [...current.replies, ...incoming];
+  }
+
+  writeJSON(getQuickRepliesPath(pageId), { replies: result });
+  cacheDel(`qr_${pageId}`);
+  res.json({
+    ok: true,
+    total: result.length,
+    imported: mode === 'replace' ? result.length : result.length - current.replies.length,
+  });
 });
 
 // ============================================================
@@ -1783,6 +2177,36 @@ app.post('/api/messages/send-image-url', async (req, res) => {
 // START SERVER
 // ============================================================
 
+loadPageTokens();
+
+async function enrichAllUnknownParticipants() {
+  const tokens = readJSON(getPageTokensPath(), {});
+  const pageIds = Object.keys(tokens);
+  if (pageIds.length === 0) return;
+
+  for (const pageId of pageIds) {
+    const token = tokens[pageId]?.accessToken;
+    if (!token) continue;
+
+    const convs = dbModule.getConversations(pageId);
+    const unknowns = convs.filter(c =>
+      !c.participant_name || c.participant_name === 'Unknown'
+    );
+
+    if (unknowns.length === 0) continue;
+    console.log(`[ENRICH] Page ${pageId}: ${unknowns.length} unknown participants`);
+
+    for (let i = 0; i < unknowns.length; i++) {
+      const conv = unknowns[i];
+      await new Promise(r => setTimeout(r, 300 * i));
+      resolveAndEnrichConversation(pageId, conv.participant_id, conv.id)
+        .catch(e => console.error('[ENRICH]', e.message));
+    }
+  }
+}
+
+setTimeout(() => enrichAllUnknownParticipants().catch(console.error), 2000);
+
 httpServer.listen(PORT, () => {
   console.log(`
 ╔════════════════════════════════════════╗
@@ -1799,6 +2223,7 @@ httpServer.listen(PORT, () => {
 ║   POST /api/messages/send              ║
 ║   GET  /cache/stats     Debug cache    ║
 ║   GET  /db/stats        DB + cache     ║
+║   DEL  /db/clear       Xóa toàn bộ DB ║
 ╚════════════════════════════════════════╝
   `);
 });

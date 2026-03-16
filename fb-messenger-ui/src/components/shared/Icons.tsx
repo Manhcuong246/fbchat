@@ -115,6 +115,21 @@ export const IconMail = (p: { size?: number }) => (
   </svg>
 );
 
+export const IconType = (p: { size?: number }) => (
+  <svg width={p.size ?? 18} height={p.size ?? 18} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="4 7 4 4 20 4 20 7" />
+    <line x1="9" y1="20" x2="15" y2="20" />
+    <line x1="12" y1="4" x2="12" y2="20" />
+  </svg>
+);
+
+export const IconReply = (p: { size?: number }) => (
+  <svg width={p.size ?? 18} height={p.size ?? 18} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="9 17 4 12 9 7" />
+    <path d="M20 18v-2a4 4 0 0 0-4-4H4" />
+  </svg>
+);
+
 export const IconRefresh = (p: { size?: number }) => (
   <svg width={p.size ?? 18} height={p.size ?? 18} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
     <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />

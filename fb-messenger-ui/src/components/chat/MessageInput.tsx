@@ -10,6 +10,8 @@ export interface Props {
   onSend: (text: string, imageBase64?: string, imageType?: string, libraryImages?: LibraryImage[]) => void;
   onQuickReply?: (reply: QuickReply) => void;
   disabled?: boolean;
+  replyingTo?: { id: string; text: string | null; senderName: string; isFromPage: boolean } | null;
+  onClearReply?: () => void;
 }
 
 interface SelectedImage {
@@ -129,6 +131,10 @@ export const MessageInput = (props: Props) => {
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Escape' && props.replyingTo) {
+      props.onClearReply?.();
+      return;
+    }
     if (showSuggest()) {
       if (e.key === 'Enter') {
         const list = suggestReplies();
@@ -257,6 +263,57 @@ export const MessageInput = (props: Props) => {
         overflow: hasPopupOpen() ? 'visible' : 'hidden',
       }}
     >
+      <Show when={props.replyingTo}>
+        <div
+          style={{
+            display: 'flex',
+            'align-items': 'center',
+            gap: '10px',
+            padding: '8px 16px',
+            background: '#f3f4f6',
+            'border-top': '1px solid #e5e7eb',
+            'border-left': '3px solid #6366f1',
+            'margin-bottom': '-1px',
+            width: '100%',
+            'box-sizing': 'border-box',
+          }}
+        >
+          <div style={{ flex: 1, 'min-width': 0 }}>
+            <div style={{ 'font-size': '12px', 'font-weight': 600, color: '#6366f1', 'margin-bottom': '2px' }}>
+              Trả lời {props.replyingTo!.senderName}
+            </div>
+            <div
+              style={{
+                'font-size': '12px',
+                color: '#6b7280',
+                overflow: 'hidden',
+                'white-space': 'nowrap',
+                'text-overflow': 'ellipsis',
+              }}
+            >
+              {props.replyingTo!.text || 'Hình ảnh'}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => props.onClearReply?.()}
+            aria-label="Hủy trả lời"
+            style={{
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              color: '#9ca3af',
+              'font-size': '18px',
+              'line-height': 1,
+              'flex-shrink': 0,
+              padding: '2px',
+            }}
+          >
+            <IconClose size={18} />
+          </button>
+        </div>
+      </Show>
+
       <div class="message-input-inner">
       {/* Library images preview */}
       <Show when={pendingImages().length > 0}>
@@ -485,6 +542,22 @@ export const MessageInput = (props: Props) => {
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22,2 15,22 11,13 2,9"/></svg>
         </button>
       </div>
+
+      <Show when={text().length > 1800}>
+        <div
+          style={{
+            'font-size': '11px',
+            color: text().length > 1900 ? '#ef4444' : '#f59e0b',
+            textAlign: 'right',
+            padding: '2px 8px',
+          }}
+        >
+          {text().length > 1900
+            ? `Sẽ tách thành ${Math.ceil(text().length / 1900)} tin nhắn`
+            : `${2000 - text().length} ký tự còn lại`
+          }
+        </div>
+      </Show>
 
       {/* Slash suggest dropdown */}
       <Show when={showSuggest()}>

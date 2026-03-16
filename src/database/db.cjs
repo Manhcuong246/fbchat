@@ -65,6 +65,15 @@ db.exec(`
 try {
   db.prepare('ALTER TABLE conversations ADD COLUMN participant_picture_url TEXT').run();
 } catch (_) { /* column may already exist */ }
+try {
+  db.prepare('ALTER TABLE messages ADD COLUMN reply_to_id TEXT').run();
+} catch (_) { /* column may already exist */ }
+try {
+  db.prepare('ALTER TABLE messages ADD COLUMN reply_to_text TEXT').run();
+} catch (_) { /* column may already exist */ }
+try {
+  db.prepare('ALTER TABLE messages ADD COLUMN reply_to_is_from_page INTEGER').run();
+} catch (_) { /* column may already exist */ }
 
 // ── PREPARED STATEMENTS (nhanh hơn dynamic query) ──
 
@@ -147,13 +156,18 @@ const stmts = {
   upsertMessage: db.prepare(`
     INSERT INTO messages
       (id, conversation_id, page_id, text, timestamp, is_from_page,
-       sender_name, sender_id, has_attachment, attachments, status)
+       sender_name, sender_id, has_attachment, attachments, status,
+       reply_to_id, reply_to_text, reply_to_is_from_page)
     VALUES
       (@id, @conversation_id, @page_id, @text, @timestamp, @is_from_page,
-       @sender_name, @sender_id, @has_attachment, @attachments, @status)
+       @sender_name, @sender_id, @has_attachment, @attachments, @status,
+       @reply_to_id, @reply_to_text, @reply_to_is_from_page)
     ON CONFLICT(id) DO UPDATE SET
       sender_name = CASE WHEN excluded.sender_name != '' THEN excluded.sender_name ELSE sender_name END,
-      sender_id = CASE WHEN excluded.sender_id != '' THEN excluded.sender_id ELSE sender_id END
+      sender_id = CASE WHEN excluded.sender_id != '' THEN excluded.sender_id ELSE sender_id END,
+      reply_to_id = excluded.reply_to_id,
+      reply_to_text = excluded.reply_to_text,
+      reply_to_is_from_page = excluded.reply_to_is_from_page
   `),
 
   getMessages: db.prepare(`
@@ -183,6 +197,8 @@ const stmts = {
     ORDER BY timestamp DESC
     LIMIT 1
   `),
+
+  getMessageById: db.prepare(`SELECT * FROM messages WHERE id = ? LIMIT 1`),
 
   // Page tokens
   upsertToken: db.prepare(`
@@ -286,5 +302,19 @@ module.exports = {
 
   getLatestParticipantMessage(convId) {
     return stmts.getLatestParticipantMessage.get(convId);
+  },
+
+  getMessageById(id) {
+    return stmts.getMessageById.get(id) ?? null;
+  },
+
+  /** Xóa toàn bộ dữ liệu trong database (giữ nguyên schema). */
+  clearAllData() {
+    const run = db.transaction(() => {
+      db.prepare('DELETE FROM messages').run();
+      db.prepare('DELETE FROM conversations').run();
+      db.prepare('DELETE FROM page_tokens').run();
+    });
+    run();
   },
 };

@@ -7,12 +7,14 @@ const [msgState, setMsgState] = createStore<{
   refreshTrigger: Record<string, number>;
   loading: boolean;
   loadingMore: boolean;
+  lastLoadTime: Record<string, number>;
 }>({
   messages: {},
   beforeCursors: {},
   refreshTrigger: {},
   loading: false,
   loadingMore: false,
+  lastLoadTime: {},
 });
 
 export { msgState, setMsgState };

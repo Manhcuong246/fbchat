@@ -25,4 +25,9 @@ export interface MessageData {
   senderName: string;
   isRead: boolean;
   sendStatus?: MessageSendStatus;
+  /** Reply-to reference (UI only, FB API does not support threading). */
+  replyToId?: string | null;
+  replyToText?: string | null;
+  /** Whether the reply-to message was from page (for quote label: Bạn vs Khách). */
+  replyToIsFromPage?: boolean | null;
 }
