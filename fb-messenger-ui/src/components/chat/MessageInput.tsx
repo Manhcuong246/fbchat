@@ -399,7 +399,6 @@ export const MessageInput = (props: Props) => {
                     }}
                   >
                     <button type="button" class="toolbar-menu-btn" onClick={() => { triggerImageInput(); setShowToolbarMenu(false); }} style={toolbarMenuBtnStyle()}><span style={{ width: '20px', display: 'flex' }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></span>Đính kèm</button>
-                    <button type="button" class="toolbar-menu-btn" onClick={() => { triggerImageInput(); setShowToolbarMenu(false); }} style={toolbarMenuBtnStyle()}><span style={{ width: '20px', display: 'flex' }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21,15 16,10 5,21"/></svg></span>Gửi ảnh</button>
                     <button type="button" class="toolbar-menu-btn" onClick={() => { setShowQuickReplies(true); setShowToolbarMenu(false); }} style={toolbarMenuBtnStyle()}><span style={{ width: '20px', display: 'flex' }}><IconLightning size={18} /></span>Tin nhắn nhanh</button>
                     <Show when={props.pageId}>
                       <button type="button" class="toolbar-menu-btn" onClick={() => { setShowLibrary(true); setShowToolbarMenu(false); }} style={toolbarMenuBtnStyle()}><span style={{ width: '20px', display: 'flex' }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></span>Thư viện ảnh</button>
@@ -411,9 +410,6 @@ export const MessageInput = (props: Props) => {
           >
             <button type="button" onClick={triggerImageInput} title="Đính kèm" disabled={props.disabled} style={toolbarBtnStyle('attach')} onMouseEnter={() => setHoveredToolbar('attach')} onMouseLeave={() => setHoveredToolbar(null)}>
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
-            </button>
-            <button type="button" onClick={triggerImageInput} title="Gửi ảnh" disabled={props.disabled} style={toolbarBtnStyle('photo')} onMouseEnter={() => setHoveredToolbar('photo')} onMouseLeave={() => setHoveredToolbar(null)}>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21,15 16,10 5,21"/></svg>
             </button>
             <button type="button" class={showQuickReplies() ? 'active' : ''} onClick={() => setShowQuickReplies((v) => !v)} title="Tin nhắn nhanh" disabled={props.disabled} style={toolbarBtnStyle('quickreply')} onMouseEnter={() => setHoveredToolbar('quickreply')} onMouseLeave={() => setHoveredToolbar(null)}>
               <IconLightning size={18} />

@@ -392,13 +392,25 @@ export const ImageLibrary = (props: Props) => {
   }
 
   return (
-    <div style={{
-      position: 'fixed', inset: '0',
-      background: 'rgba(0,0,0,0.5)',
-      display: 'flex', 'align-items': 'center', 'justify-content': 'center',
-      'z-index': '9999',
-    }}>
-      {content()}
+    <div
+      className="image-library-overlay"
+      style={{
+        position: 'fixed', inset: '0',
+        background: 'rgba(0,0,0,0.5)',
+        display: 'flex', 'align-items': 'center', 'justify-content': 'center',
+        'z-index': '9999',
+      }}
+      onClick={props.onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Thư viện ảnh"
+    >
+      <div
+        className="image-library-modal"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {content()}
+      </div>
     </div>
   );
 };

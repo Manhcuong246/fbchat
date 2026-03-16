@@ -540,6 +540,15 @@ body {
 .image-preview-wrapper { padding: 4px 0; display: flex; gap: 8px; flex-wrap: wrap; }
 .image-preview-item { position: relative; display: inline-flex; }
 .image-preview-item img { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; border: 2px solid var(--color-border); }
+
+/* Sticker trong chat — vùng chứa co giãn theo sticker + padding, render rõ nét */
+.sticker-container { flex-shrink: 0 !important; }
+.sticker-img {
+  width: 180px !important;
+  height: 180px !important;
+  object-fit: contain !important;
+  image-rendering: crisp-edges !important;
+}
 .image-preview-remove {
   position: absolute; top: -6px; right: -6px;
   width: 20px; height: 20px; border-radius: 50%;

@@ -643,7 +643,7 @@ function parseAttachments(data: unknown[]): MessageMedia[] {
         (att.file_url as string) ??
         payload?.url ??
         null;
-      const type = img || att.type === 'image' ? 'image' : vid || att.type === 'video' ? 'video' : att.type === 'sticker' ? 'sticker' : 'file';
+      const type = att.type === 'sticker' ? 'sticker' : img || att.type === 'image' ? 'image' : vid || att.type === 'video' ? 'video' : 'file';
       if (!url && !att.id) return null;
       return {
         type: type as MessageMedia['type'],

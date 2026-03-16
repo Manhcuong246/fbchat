@@ -101,6 +101,15 @@
   animation: scaleIn 200ms cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
 }
 
+/* Image library modal */
+.image-library-overlay {
+  animation: fadeIn 200ms ease forwards;
+}
+
+.image-library-modal {
+  animation: slideUp 250ms cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
 /* Settings list items */
 .settings-reply-item {
   transition: background 150ms ease, transform 150ms ease;

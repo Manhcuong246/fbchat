@@ -219,6 +219,7 @@ export const MessageBubble = (props: Props) => {
                   media={media}
                   pageToken={props.token}
                   messageId={msg().id}
+                  preferStickerSize={isMediaOnly() && mediasList().length === 1}
                 />
               )}
             </For>

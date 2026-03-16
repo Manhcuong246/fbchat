@@ -1,6 +1,7 @@
 import { createSignal, Switch, Match, onMount, Show } from 'solid-js';
 import { IconImage } from '../shared/Icons';
 import type { MessageMedia } from '../../types/message';
+import { toHighResStickerUrl } from '../../utils/stickerUrl';
 
 const PROXY_BASE = 'http://localhost:3001';
 
@@ -111,6 +112,8 @@ export const MediaRenderer = (props: {
   media: MessageMedia;
   pageToken?: string;
   messageId?: string;
+  /** Khi true: media-only (1 ảnh/sticker) dùng kích thước lớn */
+  preferStickerSize?: boolean;
 }) => {
   const [resolvedUrl, setResolvedUrl] = createSignal<string | null>(props.media.url ?? null);
   const [resolvedType, setResolvedType] = createSignal<string | null>(props.media.type === 'pending' ? null : props.media.type);
@@ -221,31 +224,26 @@ export const MediaRenderer = (props: {
           }
         >
           <div
+            class={props.preferStickerSize ? 'sticker-container' : undefined}
             style={{
               'border-radius': '8px',
               overflow: 'hidden',
               cursor: 'pointer',
-              'max-width': '260px',
-              'max-height': '340px',
-              display: 'flex',
-              'align-items': 'center',
-              'justify-content': 'center',
+              ...(props.preferStickerSize
+                ? { padding: '8px', flexShrink: 0, display: 'inline-flex', 'align-items': 'center', 'justify-content': 'center' }
+                : { 'max-width': '260px', 'max-height': '340px', display: 'flex', 'align-items': 'center', 'justify-content': 'center' }),
             }}
             onClick={() => window.open(displayUrl()!, '_blank')}
           >
             <img
               src={displayUrl()!}
               alt=""
+              class={props.preferStickerSize ? 'sticker-img' : undefined}
               onError={() => setImgError(true)}
               style={{
-                'max-width': '100%',
-                'max-height': '340px',
-                width: 'auto',
-                height: 'auto',
-                display: 'block',
-                'object-fit': 'contain',
-                'border-radius': '8px',
-                'vertical-align': 'middle',
+                ...(props.preferStickerSize
+                  ? { width: '180px', height: '180px', 'object-fit': 'contain', display: 'block', 'border-radius': '8px', imageRendering: 'crisp-edges' }
+                  : { 'max-width': '100%', 'max-height': '340px', width: 'auto', height: 'auto', display: 'block', 'object-fit': 'contain', 'border-radius': '8px', 'vertical-align': 'middle' }),
               }}
               loading="lazy"
             />
@@ -254,12 +252,30 @@ export const MediaRenderer = (props: {
       </Match>
 
       <Match when={media()!.type === 'sticker' && (resolvedUrl() || media()!.url)}>
-        <img
-          src={proxyImageUrl(resolvedUrl() || media()!.url)}
-          alt=""
-          style={{ width: '120px', height: '120px', 'object-fit': 'contain' }}
-          loading="lazy"
-        />
+        <div
+          class="sticker-container"
+          style={{
+            padding: '8px',
+            flexShrink: 0,
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <img
+            src={proxyImageUrl(toHighResStickerUrl(resolvedUrl() || media()!.url))}
+            alt=""
+            class="sticker-img"
+            style={{
+              width: '180px',
+              height: '180px',
+              objectFit: 'contain',
+              display: 'block',
+              imageRendering: 'crisp-edges',
+            }}
+            loading="lazy"
+          />
+        </div>
       </Match>
 
       <Match when={(media()!.type === 'video' || resolvedType() === 'video') && (resolvedUrl() || media()!.url) && !videoError()}>
